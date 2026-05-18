@@ -1,45 +1,55 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-require_root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+
 require_cmd openssl
-require_cmd python3
+prepare_dirs
 
-if ! is_true "${GENERATE_KEYS_AND_CSRS:-true}"; then
-  echo "[SKIP] GENERATE_KEYS_AND_CSRS=false. Customer-provided keys/certs mode."
-  echo "Place keys at:  ${AUTO_TLS_KEYS_DIR}/<hostname>${HOST_KEY_SUFFIX}"
-  echo "Place certs at: ${AUTO_TLS_CERTS_DIR}/<hostname>${HOST_CERT_SUFFIX}"
-  echo "Place CA chain: ${AUTO_TLS_CA_CHAIN_FILE}"
-  exit 0
-fi
+make_host() {
+  local host_id="$1" cn="$2" dns_sans="$3" ip_sans="$4" san_line cnf key csr
+  san_line="$(build_san_line "$dns_sans" "$ip_sans")"
+  [[ -n "$san_line" ]] || fail "No SAN entries found for host_id=$host_id. Add dns_sans or ip_sans."
+  cnf="$(host_openssl_cnf "$host_id")"
+  key="$(host_key "$host_id")"
+  csr="$(host_csr "$host_id")"
 
-mkdir -p "$AUTO_TLS_KEYS_DIR" "$AUTO_TLS_CSRS_DIR"
+  cat > "$cnf" <<EOF_CNF
+[ req ]
+default_bits = ${TLS_KEY_SIZE}
+prompt = no
+default_md = ${TLS_DIGEST}
+distinguished_name = dn
+req_extensions = req_ext
 
-while IFS=$'\t' read -r hostname cn san_dns san_ip; do
-  [[ -z "$hostname" ]] && continue
-  key="$(host_key_file "$hostname")"
-  csr="$(host_csr_file "$hostname")"
-  cfg="${AUTO_TLS_CSRS_DIR}/${hostname}-openssl.cnf"
+[ dn ]
+CN = ${cn}
 
-  if [[ -e "$key" || -e "$csr" ]] && ! is_true "${OVERWRITE_KEYS_AND_CSRS:-false}"; then
-    echo "[SKIP] Existing key/CSR for $hostname. Set OVERWRITE_KEYS_AND_CSRS=true to replace."
-    continue
-  fi
+[ req_ext ]
+subjectAltName = ${san_line}
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+EOF_CNF
 
-  make_san_config "$hostname" "$cn" "$san_dns" "$san_ip" "$cfg"
-  subj="/CN=${cn}/O=${TLS_SUBJECT_O}/OU=${TLS_SUBJECT_OU}/L=${TLS_SUBJECT_L}/ST=${TLS_SUBJECT_ST}/C=${TLS_SUBJECT_C}"
-
-  echo "[INFO] Generating key and CSR for $hostname"
-  openssl req -newkey "${TLS_KEY_ALGORITHM}:${TLS_RSA_BITS}" "-${TLS_SIGNATURE_DIGEST}" \
-    -keyout "$key" \
-    -out "$csr" \
-    -passout "file:${AUTO_TLS_KEY_PASSWORD_FILE}" \
-    -subj "$subj" \
-    -config "$cfg"
-
+  info "Generating encrypted private key for ${host_id}: ${key}"
+  openssl genpkey \
+    -algorithm "${TLS_KEY_ALGORITHM}" \
+    -pkeyopt rsa_keygen_bits:"${TLS_KEY_SIZE}" \
+    -aes-256-cbc \
+    -pass pass:"${TLS_KEY_PASSWORD}" \
+    -out "$key"
   chmod 600 "$key"
-  chmod 644 "$csr" "$cfg"
-done < <(read_hosts_python)
 
-chown -R cloudera-scm:cloudera-scm "$AUTO_TLS_WORKDIR" 2>/dev/null || true
-echo "[OK] Generated keys and CSRs under $AUTO_TLS_WORKDIR"
+  info "Generating CSR for ${host_id}: ${csr}"
+  openssl req -new \
+    -key "$key" \
+    -passin pass:"${TLS_KEY_PASSWORD}" \
+    -out "$csr" \
+    -config "$cnf"
+
+  ok "Created key and CSR for ${host_id}"
+}
+
+read_hosts_loop make_host
+ok "Generated host keys and CSRs under ${TLS_WORKDIR}"

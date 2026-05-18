@@ -3,100 +3,105 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TLS_ENV_FILE="${TLS_ENV_FILE:-${SCRIPT_DIR}/tls.env}"
+
 if [[ -f "$TLS_ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$TLS_ENV_FILE"
 else
-  echo "[ERROR] Missing tls.env. Copy tls.env.example to tls.env and edit it."
+  echo "[ERROR] Missing tls.env. Copy tls.env.example to tls.env and edit it." >&2
   exit 1
 fi
 
+TLS_WORKDIR="${TLS_WORKDIR:-/root/cfm_tls_artifacts}"
+TLS_HOSTS_FILE="${TLS_HOSTS_FILE:-./hosts.csv}"
+TLS_STORE_TYPE="${TLS_STORE_TYPE:-PKCS12}"
+TLS_KEY_ALGORITHM="${TLS_KEY_ALGORITHM:-RSA}"
+TLS_KEY_SIZE="${TLS_KEY_SIZE:-3072}"
+TLS_DIGEST="${TLS_DIGEST:-sha256}"
+TLS_CERT_DAYS="${TLS_CERT_DAYS:-825}"
+TLS_KEY_PASSWORD="${TLS_KEY_PASSWORD:-ChangeMeKeyPass2026}"
+TLS_KEYSTORE_PASSWORD="${TLS_KEYSTORE_PASSWORD:-ChangeMeKeyStore2026}"
+TLS_TRUSTSTORE_PASSWORD="${TLS_TRUSTSTORE_PASSWORD:-ChangeMeTrustStore2026}"
+TLS_DEMO_CA_CN="${TLS_DEMO_CA_CN:-CFM Demo Internal CA}"
+TLS_DEMO_CA_DAYS="${TLS_DEMO_CA_DAYS:-3650}"
+TLS_DEMO_CA_KEY_PASSWORD="${TLS_DEMO_CA_KEY_PASSWORD:-ChangeMeDemoCA2026}"
+JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-11-openjdk}"
+KEYTOOL="${KEYTOOL:-${JAVA_HOME}/bin/keytool}"
+
+KEYS_DIR="${TLS_WORKDIR}/keys"
+CSRS_DIR="${TLS_WORKDIR}/csrs"
+CERTS_DIR="${TLS_WORKDIR}/certs"
+FULLCHAINS_DIR="${TLS_WORKDIR}/fullchains"
+STORES_DIR="${TLS_WORKDIR}/stores"
+CA_DIR="${TLS_WORKDIR}/ca"
+OPENSSL_DIR="${TLS_WORKDIR}/openssl"
+PASSWORD_DIR="${TLS_WORKDIR}/passwords"
+
+CA_KEY="${CA_DIR}/demo-ca-key.pem"
+CA_CERT="${CA_DIR}/demo-ca-cert.pem"
+CA_CHAIN="${CA_DIR}/ca-chain.pem"
+
+fail() { echo "[ERROR] $*" >&2; exit 1; }
+info() { echo "[INFO] $*"; }
+ok() { echo "[OK] $*"; }
+
 require_cmd() {
-  local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "[ERROR] Required command missing: $cmd"
-    exit 1
+  command -v "$1" >/dev/null 2>&1 || fail "Required command missing: $1"
+}
+
+prepare_dirs() {
+  mkdir -p "$KEYS_DIR" "$CSRS_DIR" "$CERTS_DIR" "$FULLCHAINS_DIR" "$STORES_DIR" "$CA_DIR" "$OPENSSL_DIR" "$PASSWORD_DIR"
+  chmod 700 "$KEYS_DIR" "$PASSWORD_DIR" "$CA_DIR"
+  printf '%s' "$TLS_KEY_PASSWORD" > "${PASSWORD_DIR}/key.pass"
+  printf '%s' "$TLS_KEYSTORE_PASSWORD" > "${PASSWORD_DIR}/keystore.pass"
+  printf '%s' "$TLS_TRUSTSTORE_PASSWORD" > "${PASSWORD_DIR}/truststore.pass"
+  chmod 600 "${PASSWORD_DIR}"/*.pass
+}
+
+hosts_file_path() {
+  if [[ "$TLS_HOSTS_FILE" = /* ]]; then
+    echo "$TLS_HOSTS_FILE"
+  else
+    echo "${SCRIPT_DIR}/${TLS_HOSTS_FILE}"
   fi
 }
 
-require_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
-    echo "[ERROR] Run as root or with sudo -E."
-    exit 1
-  fi
+normalize_host_file() {
+  local hf
+  hf="$(hosts_file_path)"
+  [[ -f "$hf" ]] || fail "Hosts file not found: $hf"
+  echo "$hf"
 }
 
-is_true() {
-  [[ "${1:-}" == "true" || "${1:-}" == "TRUE" || "${1:-}" == "1" || "${1:-}" == "yes" ]]
+host_key() { echo "${KEYS_DIR}/$1-key.pem"; }
+host_csr() { echo "${CSRS_DIR}/$1-csr.pem"; }
+host_cert() { echo "${CERTS_DIR}/$1-cert.pem"; }
+host_fullchain() { echo "${FULLCHAINS_DIR}/$1-fullchain.pem"; }
+host_keystore() { echo "${STORES_DIR}/$1-keystore.p12"; }
+host_truststore() { echo "${STORES_DIR}/$1-truststore.p12"; }
+host_openssl_cnf() { echo "${OPENSSL_DIR}/$1-openssl.cnf"; }
+
+build_san_line() {
+  local dns_sans="$1" ip_sans="$2" entries=() item
+  IFS=';' read -ra dns_parts <<< "$dns_sans"
+  for item in "${dns_parts[@]}"; do
+    [[ -n "$item" ]] && entries+=("DNS:${item}")
+  done
+  IFS=';' read -ra ip_parts <<< "$ip_sans"
+  for item in "${ip_parts[@]}"; do
+    [[ -n "$item" ]] && entries+=("IP:${item}")
+  done
+  local IFS=,
+  echo "${entries[*]}"
 }
 
-password_check() {
-  local name="$1" value="$2"
-  if (( ${#value} <= 12 )); then
-    echo "[ERROR] $name must be more than 12 characters."
-    exit 1
-  fi
-  if [[ "$value" =~ [^A-Za-z0-9] ]]; then
-    echo "[ERROR] $name must not include special characters for this Cloudera Auto-TLS flow."
-    exit 1
-  fi
-}
-
-host_key_file() { echo "${AUTO_TLS_KEYS_DIR}/$1${HOST_KEY_SUFFIX:--key.pem}"; }
-host_cert_file() { echo "${AUTO_TLS_CERTS_DIR}/$1${HOST_CERT_SUFFIX:-.pem}"; }
-host_csr_file() { echo "${AUTO_TLS_CSRS_DIR}/$1${HOST_CSR_SUFFIX:-.csr}"; }
-
-read_hosts_python() {
-python3 - "$HOSTS_CSV" <<'PY'
-import csv, sys
-path=sys.argv[1]
-with open(path, newline='') as f:
-    for row in csv.reader(line for line in f if line.strip() and not line.lstrip().startswith('#')):
-        if len(row) < 2:
-            continue
-        hostname=row[0].strip(); cn=row[1].strip() or hostname
-        san_dns=row[2].strip() if len(row)>2 else ''
-        san_ip=row[3].strip() if len(row)>3 else ''
-        print('\t'.join([hostname, cn, san_dns, san_ip]))
-PY
-}
-
-make_san_config() {
-  local hostname="$1" cn="$2" san_dns="$3" san_ip="$4" out="$5"
-  python3 - "$hostname" "$cn" "$san_dns" "$san_ip" "$out" <<'PY'
-import sys
-hostname, cn, san_dns, san_ip, out = sys.argv[1:]
-dns=[]
-for v in [hostname, cn] + [x.strip() for x in san_dns.split('|') if x.strip()]:
-    if v and v not in dns:
-        dns.append(v)
-ips=[]
-for v in [x.strip() for x in san_ip.split('|') if x.strip()]:
-    if v and v not in ips:
-        ips.append(v)
-lines=[]
-lines.append('[req]')
-lines.append('distinguished_name = req_distinguished_name')
-lines.append('req_extensions = v3_req')
-lines.append('prompt = no')
-lines.append('[req_distinguished_name]')
-lines.append(f'CN = {cn}')
-lines.append('[v3_req]')
-lines.append('keyUsage = critical, digitalSignature, keyEncipherment')
-lines.append('extendedKeyUsage = serverAuth, clientAuth')
-san=[]
-for i,v in enumerate(dns,1): san.append(f'DNS.{i} = {v}')
-for i,v in enumerate(ips,1): san.append(f'IP.{i} = {v}')
-if san:
-    lines.append('subjectAltName = @alt_names')
-    lines.append('[alt_names]')
-    lines.extend(san)
-with open(out,'w') as f:
-    f.write('\n'.join(lines)+'\n')
-PY
-}
-
-json_escape_private_key() {
-  local key_file="$1"
-  awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' "$key_file"
+read_hosts_loop() {
+  local callback="$1" hf line host_id cn dns_sans ip_sans
+  hf="$(normalize_host_file)"
+  tail -n +2 "$hf" | while IFS=, read -r host_id cn dns_sans ip_sans; do
+    [[ -z "${host_id// }" ]] && continue
+    [[ "$host_id" =~ ^# ]] && continue
+    [[ -n "${cn:-}" ]] || fail "Missing CN for host_id=$host_id in $hf"
+    "$callback" "$host_id" "$cn" "${dns_sans:-}" "${ip_sans:-}"
+  done
 }

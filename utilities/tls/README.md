@@ -1,178 +1,100 @@
-# Cloudera Auto-TLS Use Case 3 Utilities
+# Manual TLS Utilities for CFM / NiFi / NiFi Registry
 
-These utilities support Cloudera Manager Auto-TLS **Use Case 3: Enabling Auto-TLS with Existing Certificates**. This is the flow where certificates are signed by your existing CA, staged on the Cloudera Manager server, and enabled through the `generateCmca` API.
+This folder generates host-specific private keys, CSRs, certificates, PKCS12 keystores, and PKCS12 truststores for a manual TLS deployment.
 
-Everything is driven by variables in `tls.env` and host inventory in `hosts.csv`.
+This is not Cloudera Auto-TLS.
 
-## What is configurable
-
-`tls.env` controls:
-
-- Auto-TLS work directory, default `/tmp/auto-tls`
-- CM Auto-TLS location, default `/opt/cloudera/AutoTLS`
-- CM API host, protocol, port, API version, username, and password
-- SSH user, SSH password or SSH private key file
-- keystore and truststore passwords
-- CA chain path
-- whether to generate keys/CSRs or use customer-provided artifacts
-- key size, digest, and CSR subject values
-
-`hosts.csv` controls any number of hosts. Use one row per host:
+## Files
 
 ```text
-hostname,cn,san_dns,san_ip
+utilities/tls/
+  tls.env.example
+  hosts.csv.example
+  lib.sh
+  00_prepare_dirs.sh
+  01_generate_keys_csrs.sh
+  02_create_demo_ca.sh
+  03_sign_csrs_with_demo_ca.sh
+  04_build_pkcs12_stores.sh
+  06_validate_artifacts.sh
 ```
 
-`san_dns` and `san_ip` can contain pipe-separated values.
-
-## Two supported modes
-
-### Mode A: Generate keys and CSRs here
-
-Set:
+## Configure
 
 ```bash
-export GENERATE_KEYS_AND_CSRS='true'
+cd /root/cfm_fips_install/utilities/tls
+cp tls.env.example tls.env
+cp hosts.csv.example hosts.csv
+vi tls.env
+vi hosts.csv
 ```
 
-Run:
+For two hosts:
+
+```csv
+host_id,cn,dns_sans,ip_sans
+manager,ip-10-0-3-31.us-east-2.compute.internal,ip-10-0-3-31.us-east-2.compute.internal;ip-10-0-3-31,10.0.3.31
+agent,ip-10-0-11-156.us-east-2.compute.internal,ip-10-0-11-156.us-east-2.compute.internal;ip-10-0-11-156,10.0.11.156
+```
+
+## Generate CSRs for a real CA
 
 ```bash
-sudo -E ./00_prepare_dirs.sh
-sudo -E ./01_generate_keys_csrs.sh
+source ./tls.env
+./00_prepare_dirs.sh
+./01_generate_keys_csrs.sh
 ```
 
-Send the CSRs from:
+Send these files to the CA team:
 
 ```text
-/tmp/auto-tls/csrs/
+/root/cfm_tls_artifacts/csrs/manager-csr.pem
+/root/cfm_tls_artifacts/csrs/agent-csr.pem
 ```
 
-Ask the CA to preserve SAN values and include both Extended Key Usage values:
+When the CA returns certs, save them as:
 
 ```text
-TLS Web Server Authentication
-TLS Web Client Authentication
+/root/cfm_tls_artifacts/certs/manager-cert.pem
+/root/cfm_tls_artifacts/certs/agent-cert.pem
 ```
 
-When the CA returns certs, place each cert here:
+Save the issuing CA chain as:
 
 ```text
-/tmp/auto-tls/certs/<hostname>.pem
+/root/cfm_tls_artifacts/ca/ca-chain.pem
 ```
 
-Place the CA chain here:
+Then build stores:
+
+```bash
+./04_build_pkcs12_stores.sh
+./06_validate_artifacts.sh
+```
+
+## Demo CA flow
+
+For a lab/demo only:
+
+```bash
+source ./tls.env
+./00_prepare_dirs.sh
+./01_generate_keys_csrs.sh
+./02_create_demo_ca.sh
+./03_sign_csrs_with_demo_ca.sh
+./04_build_pkcs12_stores.sh
+./06_validate_artifacts.sh
+```
+
+## Outputs
 
 ```text
-/tmp/auto-tls/ca-certs/ca-chain.pem
+/root/cfm_tls_artifacts/keys/<host_id>-key.pem
+/root/cfm_tls_artifacts/csrs/<host_id>-csr.pem
+/root/cfm_tls_artifacts/certs/<host_id>-cert.pem
+/root/cfm_tls_artifacts/fullchains/<host_id>-fullchain.pem
+/root/cfm_tls_artifacts/stores/<host_id>-keystore.p12
+/root/cfm_tls_artifacts/stores/<host_id>-truststore.p12
 ```
 
-### Mode B: Customer provides keys and certs
-
-Set:
-
-```bash
-export GENERATE_KEYS_AND_CSRS='false'
-```
-
-Skip `01_generate_keys_csrs.sh`. Place files directly:
-
-```text
-/tmp/auto-tls/keys/<hostname>-key.pem
-/tmp/auto-tls/certs/<hostname>.pem
-/tmp/auto-tls/ca-certs/ca-chain.pem
-```
-
-The hostnames must match the first column in `hosts.csv`.
-
-## Validate certs
-
-Run:
-
-```bash
-sudo -E ./02_validate_signed_certs.sh
-```
-
-This checks:
-
-- host key exists
-- host cert exists
-- CA chain exists
-- cert includes serverAuth and clientAuth EKUs
-- cert/key pair match
-- hostname is present in DNS SAN, with warning if not found
-
-## Build the generateCmca payload
-
-Run:
-
-```bash
-sudo -E ./03_build_generate_cmca_payload.sh
-cat /tmp/auto-tls/payload/generateCmca.json
-```
-
-The JSON includes:
-
-- `location`
-- `customCA=true`
-- `interpretAsFilenames=true`
-- `cmHostCert`
-- `cmHostKey`
-- `caCert`
-- `keystorePasswd`
-- `truststorePasswd`
-- `hostCerts` for every host in `hosts.csv`
-- `configureAllServices`
-- SSH settings
-
-## Run the API
-
-Run:
-
-```bash
-sudo -E ./04_run_generate_cmca.sh
-```
-
-Or print the curl command:
-
-```bash
-./05_print_generate_cmca_curl.sh
-```
-
-The API endpoint is built from variables:
-
-```text
-${CM_API_SCHEME}://${CM_HOST_FQDN}:${CM_API_PORT}/api/${CM_API_VERSION}/cm/commands/generateCmca
-```
-
-For a fresh non-TLS CM install this is usually:
-
-```text
-http://<CM_FQDN>:7180/api/v41/cm/commands/generateCmca
-```
-
-For an existing TLS-enabled CM, use HTTPS and the TLS port.
-
-## After the API succeeds
-
-Restart CM Server and agents:
-
-```bash
-sudo -E ./06_post_autotls_restart.sh
-```
-
-Then restart agents on every other host:
-
-```bash
-systemctl restart cloudera-scm-supervisord cloudera-scm-agent
-```
-
-After Auto-TLS is active, CM UI/API should move to the TLS port.
-
-## Notes
-
-- Passwords must be more than 12 characters and should not contain special characters for this Cloudera flow.
-- Every host in the cluster needs a cert/key entry in `hostCerts`, including the CM host.
-- The CM host must also appear in `hosts.csv`.
-- The CA chain must be consistent with the host certs. If intermediate CA chains vary, include the entire chain in each host certificate file.
-- The SSH user must have NOPASSWD sudo across the cluster because CM cannot answer a sudo password prompt.
+Use `PKCS12` in CM for keystore/truststore type.
