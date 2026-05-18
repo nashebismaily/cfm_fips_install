@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Cloudera Manager + CDP Base + CFM FIPS install configuration
+# Target default: RHEL 8.10 FIPS, CM 7.13.1, CDP Runtime 7.1.9, CFM 2.1.7.1001
+# ==============================================================================
+
+# ---- Cloudera archive credentials ----
+# These are required for protected Cloudera archive downloads.
+export CLOUDERA_REPO_USER=''
+export CLOUDERA_REPO_PASS=''
+
+# ---- Host roles / networking ----
+# Set MANAGER_HOST to the FQDN or private DNS name of the Cloudera Manager host.
+# On the manager itself, localhost is acceptable for database setup, but agents need the real manager hostname.
+export MANAGER_HOST=''
+export AGENT_HOST=''
+export ALLOWED_CIDR='10.0.0.0/20'
+
+# ---- Platform guardrails ----
+export EXPECTED_RHEL_MAJOR='8'
+export EXPECTED_RHEL_MINOR='10'
+export REQUIRE_FIPS='true'
+export REQUIRE_X86_64='true'
+
+# ---- Java ----
+# For this FIPS build, Java 11 is required.
+# JAVA_INSTALL_MODE values:
+#   system  = install java-11-openjdk/java-11-openjdk-devel from OS repos
+#   custom  = do not install Java; validate CUSTOM_JAVA_HOME
+#   skip    = do not install or validate Java
+export JAVA_MAJOR='11'
+export JAVA_INSTALL_MODE='system'
+export CUSTOM_JAVA_HOME=''
+export JAVA_HOME_TARGET='/usr/lib/jvm/java-11-openjdk'
+
+# ---- PostgreSQL ----
+# CDP 7.1.9 FIPS supports PostgreSQL 10, 11, 12, 13, and 14.
+# CDP 7.1.9 SP1 FIPS supports PostgreSQL 10, 13, 14, 15, and 16.
+# PG 14 is the safest default for the 7.1.9 FIPS path.
+export PG_MAJOR='14'
+export PGDATA_DIR='/data/postgres14'
+export DB_HOST='localhost'
+export DB_PORT='5432'
+
+# ---- Databases ----
+export CM_DB_NAME='scm'
+export CM_DB_USER='scm'
+export CM_DB_PASS='ClouderaCM_2026'
+
+export RM_DB_NAME='rman'
+export RM_DB_USER='rman'
+export RM_DB_PASS='Rman_DB_2026'
+
+export REG_DB_NAME='nifireg'
+export REG_DB_USER='nifireg'
+export REG_DB_PASS='Registry_DB_2026'
+
+# Optional databases for common CDP Base services. Leave CREATE_EXTRA_DBS=false unless needed.
+export CREATE_EXTRA_DBS='false'
+export HUE_DB_NAME='hue'
+export HUE_DB_USER='hue'
+export HUE_DB_PASS='Hue_DB_2026'
+export HIVE_DB_NAME='metastore'
+export HIVE_DB_USER='hive'
+export HIVE_DB_PASS='Hive_DB_2026'
+export RANGER_DB_NAME='ranger'
+export RANGER_DB_USER='rangeradmin'
+export RANGER_DB_PASS='Ranger_DB_2026'
+
+# ---- External repo behavior ----
+export ALLOW_EXTERNAL='true'
+export ENABLE_PGDG='true'
+export ENABLE_EPEL='false'
+export DISABLE_FIREWALLD='false'
+export DISABLE_SELINUX='false'
+
+# ---- Cloudera Manager ----
+# Change these when moving to a different CM release.
+export CM_VERSION='7.13.1.0'
+export CM_MAJOR_REPO='cm7'
+export CM_OS_REPO='redhat8'
+export CM_REPO_BASE_URL="https://archive.cloudera.com/p/${CM_MAJOR_REPO}/${CM_VERSION}/${CM_OS_REPO}/yum/"
+
+# ---- CDP Runtime parcel repository ----
+# Scripts do not deploy the cluster services for you. This value is printed for CM parcel configuration.
+# ZooKeeper comes from CDP Private Cloud Base / Runtime, not from CFM.
+export CDP_RUNTIME_VERSION='7.1.9'
+export CDP_PARCEL_REPO_URL=''
+
+# ---- CFM ----
+# For CFM 2.1.7, Cloudera published a 2.1.7.1001 hotfix build that includes RHEL8 artifacts.
+# Change all CFM_* values together when moving CFM versions.
+export CFM_STREAM='cfm2'
+export CFM_VERSION='2.1.7.1001'
+export CFM_OS_REPO='redhat8'
+export CFM_PARCEL_REPO_URL="https://archive.cloudera.com/p/${CFM_STREAM}/${CFM_VERSION}/${CFM_OS_REPO}/yum/tars/parcel/"
+export CFM_NIFI_CSD_JAR='NIFI-1.26.0.2.1.7.1001-5.jar'
+export CFM_NIFIREGISTRY_CSD_JAR='NIFIREGISTRY-1.26.0.2.1.7.1001-5.jar'
+# This is the activated parcel directory name under /opt/cloudera/parcels after CM activates the CFM parcel.
+export CFM_PARCEL_DIR_NAME='CFM-2.1.7.1001-5'
+export CFM_PARCEL_ROOT="/opt/cloudera/parcels/${CFM_PARCEL_DIR_NAME}"
+export CFM_TOOLKIT_LIB_DIR="${CFM_PARCEL_ROOT}/TOOLKIT/lib"
+
+# ---- SafeLogic / Bouncy Castle FIPS jars ----
+# Keep this version-specific. When CDP/CFM/SafeLogic versions change, update this block only.
+# Point FIPS_JAR_SOURCE_DIR at the folder where you uploaded/extracted the SafeLogic jars.
+export FIPS_JAR_SOURCE_DIR='/opt/cloudera/fips-jars/cdp-7.1.9'
+# The CFM FIPS doc calls for bctls.jar and ccj-3.0.2.1.jar. If your files are named differently,
+# set these to the exact filenames in FIPS_JAR_SOURCE_DIR.
+export FIPS_BCTLS_JAR='bctls.jar'
+export FIPS_CCJ_JAR='ccj-3.0.2.1.jar'
+# Optional additional jars to copy into the CFM toolkit lib dir. Space-separated filenames.
+# Use this if your SafeLogic bundle requires provider/support jars beyond the two documented files.
+export FIPS_EXTRA_JARS=''
+
+# ---- NiFi FIPS runtime reminders ----
+export NIFI_SENSITIVE_PROPS_ALGORITHM='NIFI_PBKDF2_AES_GCM_256'
+export NIFI_SENSITIVE_PROPS_KEY='ChangeMeToAtLeast12Chars'
+
+# ---- Script logging ----
+export LOG_DIR='/var/log/cloudera-bootstrap'

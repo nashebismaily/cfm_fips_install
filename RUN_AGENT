@@ -1,0 +1,17 @@
+# Run this on the agent/worker node.
+# Edit EXPORTS first, especially credentials and MANAGER_HOST.
+
+source ./EXPORTS
+
+sudo -E bash 00_check_connectivity.sh
+sudo -E bash 01_bootstrap_repos.sh
+sudo -E bash 02_install_common_packages.sh
+sudo -E bash 03_configure_os.sh
+sudo -E bash 04_install_java11_fips_runtime.sh
+sudo -E bash 08_add_cloudera_repos.sh
+sudo -E bash 09_install_cm_packages.sh agent
+sudo -E bash 10_configure_cm_agent.sh "${MANAGER_HOST}"
+sudo -E bash 15_validate_ready_state.sh
+
+# If CFM parcel is activated on this node and this node will run NiFi/NiFi Registry, copy the SafeLogic jars here too:
+# sudo -E bash 14_install_cfm_fips_jars.sh
