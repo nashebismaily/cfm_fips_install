@@ -1,15 +1,16 @@
-# Cloudera Manager 7.13.1 + CDP 7.1.9 + CFM 2.1.7 FIPS Install Kit
+# Cloudera Manager 7.13.1 + CDP 7.3.1 + CFM 2.1.7 FIPS Install Kit
 
 This install kit prepares a two-host Cloudera environment for:
 
 - RHEL 8.10 with FIPS already enabled
 - Cloudera Manager 7.13.1
-- CDP Private Cloud Base / Runtime 7.1.9
+- CDP Private Cloud Base / Runtime 7.3.1
 - ZooKeeper from CDP Base
 - CFM 2.1.7.1001 for NiFi and NiFi Registry
 - Java 11
 - PostgreSQL 14
 - SafeLogic / Bouncy Castle FIPS jars copied into the activated CFM parcel
+- CDP 7.3.1 using the same SafeLogic/FIPS jar bundle as CDP 7.1.9
 
 The scripts do **not** enable Auto-TLS. This build assumes TLS with real enterprise certificates will be configured later through Cloudera Manager.
 
@@ -17,8 +18,9 @@ The scripts do **not** enable Auto-TLS. This build assumes TLS with real enterpr
 
 The defaults are based on the FIPS path discussed for this build:
 
-- CDP 7.1.9 FIPS supports RHEL 8.10.
-- CDP 7.1.9 FIPS supports PostgreSQL 10, 11, 12, 13, and 14. PostgreSQL 14 is the safest default for the base 7.1.9 path.
+- CDP 7.3.1 FIPS supports RHEL 8.10.
+- PostgreSQL 14 is intentionally kept as the default because it works cleanly for this lab path and keeps the install consistent with the earlier 7.1.9 FIPS profile.
+- CDP 7.3.1 uses the same SafeLogic/FIPS jar bundle as CDP 7.1.9 based on the guidance you received.
 - CFM FIPS requires CDP Base installed with FIPS enabled, Java 11 FIPS-compliant build, CFM 2.x such as 2.1.7, and SafeLogic/Bouncy Castle crypto jars.
 - Auto-TLS is recommended by Cloudera, but this kit intentionally leaves TLS for a later manual enterprise-cert phase.
 
@@ -128,11 +130,13 @@ When moving CM versions, update `CM_VERSION` and confirm the repo path.
 ### CDP Runtime
 
 ```bash
-export CDP_RUNTIME_VERSION='7.1.9'
+export CDP_RUNTIME_VERSION='7.3.1'
 export CDP_PARCEL_REPO_URL=''
 ```
 
 These scripts do not deploy CDP services automatically. In Cloudera Manager, deploy CDP Base services first, including ZooKeeper. ZooKeeper comes from the CDP Runtime parcel, not from CFM.
+
+For this update, CM remains on 7.13.1 and the SafeLogic jar variables stay pointed to the same jar bundle used for CDP 7.1.9. The runtime change is handled through the CDP Runtime version and the parcel repository you configure in Cloudera Manager.
 
 ### CFM
 
@@ -152,7 +156,7 @@ When moving CFM versions, update all of those CFM values together.
 
 ## SafeLogic / Bouncy Castle jar configuration
 
-This is version-specific and intentionally configurable.
+This is intentionally configurable, but for this profile the SafeLogic jar bundle does **not** change when moving from CDP 7.1.9 to CDP 7.3.1. Based on the guidance you received, CDP 7.3.1 uses the same FIPS jars as CDP 7.1.9.
 
 Put the SafeLogic jars somewhere consistent on every host that will run NiFi or NiFi Registry, for example:
 
@@ -179,7 +183,7 @@ export FIPS_CCJ_JAR='ccj-3.0.2.1.jar'
 export FIPS_EXTRA_JARS='bc-fips-1.0.2.4.jar bcpkix-fips-1.0.7.jar'
 ```
 
-Do not hard-code these names in the scripts. When you later move from CDP 7.1.9 to CDP 7.3.1, create a new directory and update `FIPS_JAR_SOURCE_DIR` and jar filenames in `EXPORTS`.
+Do not hard-code these names in the scripts. For this CDP 7.3.1 profile, leave the default pointing to the existing CDP 7.1.9 SafeLogic jar folder unless Cloudera gives you a newer jar bundle later. If the SafeLogic bundle changes in the future, only update `FIPS_JAR_SOURCE_DIR`, `FIPS_BCTLS_JAR`, `FIPS_CCJ_JAR`, and optionally `FIPS_EXTRA_JARS`.
 
 ## Manager install order
 

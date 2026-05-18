@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Cloudera Manager + CDP Base + CFM FIPS install configuration
-# Target default: RHEL 8.10 FIPS, CM 7.13.1, CDP Runtime 7.1.9, CFM 2.1.7.1001
+# Target default: RHEL 8.10 FIPS, CM 7.13.1, CDP Runtime 7.3.1, CFM 2.1.7.1001
 # ==============================================================================
 
 # ---- Cloudera archive credentials ----
@@ -34,9 +34,9 @@ export CUSTOM_JAVA_HOME=''
 export JAVA_HOME_TARGET='/usr/lib/jvm/java-11-openjdk'
 
 # ---- PostgreSQL ----
-# CDP 7.1.9 FIPS supports PostgreSQL 10, 11, 12, 13, and 14.
-# CDP 7.1.9 SP1 FIPS supports PostgreSQL 10, 13, 14, 15, and 16.
-# PG 14 is the safest default for the 7.1.9 FIPS path.
+# CDP 7.3.1 FIPS supports PostgreSQL 10 through 16.
+# PG 14 is intentionally kept as the default because it also works with the earlier 7.1.9 FIPS path
+# and keeps this install kit consistent across 7.1.9 -> 7.3.1 testing.
 export PG_MAJOR='14'
 export PGDATA_DIR='/data/postgres14'
 export DB_HOST='localhost'
@@ -84,7 +84,7 @@ export CM_REPO_BASE_URL="https://archive.cloudera.com/p/${CM_MAJOR_REPO}/${CM_VE
 # ---- CDP Runtime parcel repository ----
 # Scripts do not deploy the cluster services for you. This value is printed for CM parcel configuration.
 # ZooKeeper comes from CDP Private Cloud Base / Runtime, not from CFM.
-export CDP_RUNTIME_VERSION='7.1.9'
+export CDP_RUNTIME_VERSION='7.3.1'
 export CDP_PARCEL_REPO_URL=''
 
 # ---- CFM ----
@@ -102,7 +102,9 @@ export CFM_PARCEL_ROOT="/opt/cloudera/parcels/${CFM_PARCEL_DIR_NAME}"
 export CFM_TOOLKIT_LIB_DIR="${CFM_PARCEL_ROOT}/TOOLKIT/lib"
 
 # ---- SafeLogic / Bouncy Castle FIPS jars ----
-# Keep this version-specific. When CDP/CFM/SafeLogic versions change, update this block only.
+# SafeLogic jar location is configurable.
+# Per current guidance, CDP 7.3.1 uses the same SafeLogic/FIPS jars as CDP 7.1.9.
+# Therefore the default still points to the existing cdp-7.1.9 jar folder.
 # Point FIPS_JAR_SOURCE_DIR at the folder where you uploaded/extracted the SafeLogic jars.
 export FIPS_JAR_SOURCE_DIR='/opt/cloudera/fips-jars/cdp-7.1.9'
 # The CFM FIPS doc calls for bctls.jar and ccj-3.0.2.1.jar. If your files are named differently,
