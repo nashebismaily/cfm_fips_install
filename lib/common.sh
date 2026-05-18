@@ -163,7 +163,7 @@ EOFJAVADEFAULT
 }
 
 validate_java_11() {
-  local java_bin version_line detected
+  local java_bin version_output version_line detected
   if [[ -n "${CUSTOM_JAVA_HOME:-}" ]]; then
     java_bin="${CUSTOM_JAVA_HOME}/bin/java"
   elif [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
@@ -177,9 +177,21 @@ validate_java_11() {
     exit 1
   fi
 
-  version_line="$($java_bin -version 2>&1 | head -1)"
+  # java -version can print an informational JDK_JAVA_OPTIONS line before the
+  # actual version after /etc/profile.d/ccj.sh is installed. Parse the real
+  # version line instead of blindly taking the first line.
+  version_output="$($java_bin -version 2>&1 || true)"
+  version_line="$(printf '%s\n' "$version_output" | grep -E '^(openjdk|java) version ' | head -1)"
+
   echo "Java executable: $java_bin"
-  echo "Java version: $version_line"
+  echo "Java version: ${version_line:-unknown}"
+
+  if [[ -z "$version_line" ]]; then
+    echo "$version_output"
+    echo "[ERROR] Java ${JAVA_MAJOR:-11} required, detected: unknown"
+    exit 1
+  fi
+
   if [[ "$version_line" =~ version\ \"([0-9]+)\. ]] || [[ "$version_line" =~ openjdk\ ([0-9]+)\. ]]; then
     detected="${BASH_REMATCH[1]}"
   else
@@ -187,6 +199,7 @@ validate_java_11() {
   fi
 
   if [[ "$detected" != "${JAVA_MAJOR:-11}" ]]; then
+    echo "$version_output"
     echo "[ERROR] Java ${JAVA_MAJOR:-11} required, detected: $detected"
     exit 1
   fi
