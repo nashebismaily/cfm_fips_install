@@ -277,6 +277,17 @@ ensure_line() {
   grep -qxF "$line" "$file" 2>/dev/null || echo "$line" >> "$file"
 }
 
+timestamped_backup() {
+  local file="$1"
+  if [[ ! -f "$file" ]]; then
+    echo "[ERROR] Cannot back up missing file: $file"
+    exit 1
+  fi
+  local backup="${file}.bak.$(date +%Y%m%d_%H%M%S)"
+  cp -a "$file" "$backup"
+  echo "[OK] Backed up $file to $backup"
+}
+
 java_fips_dir() { echo "${JAVA_FIPS_DIR:-/opt/cloudera/fips}"; }
 java_fips_ccj_jar() { echo "${JAVA_FIPS_CCJ_JAR:-${FIPS_CCJ_JAR:-ccj-3.0.2.1.jar}}"; }
 java_fips_bctls_jar() { echo "${JAVA_FIPS_BCTLS_JAR:-bctls-safelogic.jar}"; }
@@ -345,7 +356,7 @@ patch_java_policy_for_fips() {
     exit 1
   fi
 
-  cp -a "$policy_file" "${policy_file}.bak.$(date +%Y%m%d_%H%M%S)"
+  timestamped_backup "$policy_file"
   tmp="$(mktemp)"
   awk '
     /BEGIN MANAGED BY cfm_fips_install - SafeLogic permissions/ {skip=1; next}
@@ -381,7 +392,7 @@ patch_java_security_for_fips() {
     exit 1
   fi
 
-  cp -a "$security_file" "${security_file}.bak.$(date +%Y%m%d_%H%M%S)"
+  timestamped_backup "$security_file"
 
   JAVA_SECURITY_FILE="$security_file" python3 - <<'PY'
 from pathlib import Path
@@ -554,7 +565,7 @@ configure_cm_server_fips_opts() {
   bctls_mod="$(java_fips_bctls_module)"
 
   touch "$defaults"
-  cp -a "$defaults" "${defaults}.bak.$(date +%Y%m%d_%H%M%S)"
+  timestamped_backup "$defaults"
 
   tmp="$(mktemp)"
   awk '

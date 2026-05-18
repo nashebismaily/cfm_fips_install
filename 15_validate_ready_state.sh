@@ -34,6 +34,7 @@ ss -plnt | grep 5432 || true
 echo
 echo "==== Cloudera Manager ===="
 systemctl status cloudera-scm-server --no-pager 2>/dev/null || true
+systemctl status cloudera-scm-supervisord --no-pager 2>/dev/null || true
 systemctl status cloudera-scm-agent --no-pager 2>/dev/null || true
 ss -plnt | egrep ':7180|:7182' || true
 
