@@ -5,8 +5,22 @@ log_init "15_validate_ready_state"
 
 validate_platform
 
+echo "==== Python ===="
+echo "System Python: $(python3 --version 2>/dev/null || echo missing)"
+echo "Required CM Agent Python: $(required_agent_python_bin)"
+if [[ -x "$(required_agent_python_bin)" ]]; then
+  "$(required_agent_python_bin)" --version || true
+else
+  echo "[WARN] Required CM Agent Python missing: $(required_agent_python_bin)"
+fi
+validate_cm_agent_python_wrapper || true
+
+echo
 echo "==== Java ===="
 validate_java_11 || true
+if [[ "${CONFIGURE_JAVA_FIPS:-true}" == "true" ]]; then
+  validate_java_fips_providers || true
+fi
 
 echo
 echo "==== PostgreSQL ===="

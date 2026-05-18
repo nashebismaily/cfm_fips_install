@@ -5,6 +5,11 @@ MANAGER_ARG="${1:-${MANAGER_HOST:-}}"
 log_init "10_configure_cm_agent"
 need_root
 validate_platform
+ensure_java_default
+validate_java_11
+configure_java_fips_safelogic
+install_required_agent_python
+validate_cm_agent_python_wrapper
 
 if [[ -z "$MANAGER_ARG" ]]; then
   echo "Usage: sudo -E bash 10_configure_cm_agent.sh <manager-fqdn-or-private-dns>"

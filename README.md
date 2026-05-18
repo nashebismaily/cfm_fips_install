@@ -8,7 +8,7 @@ The current tested profile is:
 - OS FIPS enabled before Cloudera installation
 - Cloudera Manager 7.13.1.0
 - CDP Runtime 7.3.1
-- CFM 2.1.7.1001
+- CFM 2.1.7.3000
 - PostgreSQL 14
 - Java 11
 - SafeLogic / Bouncy Castle FIPS modules from the CDP 7.1.9 SafeLogic bundle
@@ -208,11 +208,13 @@ export PG_MAJOR='14'
 export PGDATA_DIR='/data/postgres14'
 
 export CFM_STREAM='cfm2'
-export CFM_VERSION='2.1.7.1001'
+export CFM_VERSION='2.1.7.3000'
 export CFM_OS_REPO='redhat8'
-export CFM_NIFI_CSD_JAR='NIFI-1.26.0.2.1.7.1001-5.jar'
-export CFM_NIFIREGISTRY_CSD_JAR='NIFIREGISTRY-1.26.0.2.1.7.1001-5.jar'
-export CFM_PARCEL_DIR_NAME='CFM-2.1.7.1001-5'
+export CFM_NIFI_CSD_JAR='NIFI-1.28.1.2.1.7.3000-45.jar'
+export CFM_NIFIREGISTRY_CSD_JAR='NIFIREGISTRY-1.28.1.2.1.7.3000-45.jar'
+export CFM_PARCEL_DIR_NAME='CFM-2.1.7.3000-45'
+
+Important: The CFM CSD jars and the CFM parcel repository must come from the same CFM build. For this profile, the CSD jars are `NIFI-1.28.1.2.1.7.3000-45.jar` and `NIFIREGISTRY-1.28.1.2.1.7.3000-45.jar`, and the parcel repository is `https://archive.cloudera.com/p/cfm2/2.1.7.3000/redhat8/yum/tars/parcel/`. Do not mix these with 2.1.7.1001 artifacts.
 
 export FIPS_JAR_SOURCE_DIR='/opt/cloudera/fips-jars/cdp-7.1.9'
 export FIPS_BCTLS_JAR='bctls.jar'
@@ -437,7 +439,7 @@ After manager and agent are installed:
 2. Confirm both hosts appear.
 3. Deploy the CDP Runtime cluster.
 4. ZooKeeper comes from CDP Base/Runtime. Do not manually install ZooKeeper outside CM.
-5. Add/use the CFM 2.1.7.1001 parcel repo.
+5. Add/use the CFM 2.1.7.3000 parcel repo.
 6. Download, distribute, and activate the CFM parcel.
 7. Deploy NiFi and NiFi Registry from Cloudera Manager.
 
@@ -454,7 +456,7 @@ sudo -E bash 14_install_cfm_fips_jars.sh
 That script copies the staged SafeLogic jars into the activated CFM parcel directory:
 
 ```bash
-/opt/cloudera/parcels/CFM-2.1.7.1001-5/TOOLKIT/lib
+/opt/cloudera/parcels/CFM-2.1.7.3000-45/TOOLKIT/lib
 ```
 
 That directory does not exist until the CFM parcel has been downloaded, distributed, and activated in Cloudera Manager.
@@ -558,4 +560,189 @@ cd /root/cfm_fips_install
 source ./EXPORTS
 sudo -E bash 14_install_cfm_fips_jars.sh
 sudo -E bash 15_validate_ready_state.sh
+```
+
+
+## Update: CM Agent Python 3.8 is required on RHEL 8
+
+During testing, the CM agent failed on the agent host with:
+
+```text
+ExecStart=/opt/cloudera/cm-agent/bin/cm agent (code=exited, status=126)
+```
+
+The root cause was the CM agent Python launcher:
+
+```bash
+/opt/cloudera/cm-agent/bin/python -> python3.8
+```
+
+When only the generic RHEL 8 `python3` was installed, the host had Python 3.6.8 but not Python 3.8. The CM agent wrapper selected an invalid path and failed with:
+
+```text
+/usr/local/bin/: Is a directory
+exec: /usr/local/bin/: cannot execute: Is a directory
+```
+
+The scripts now install and validate Python 3.8 on both the manager and agent hosts. The relevant configurable values are in `EXPORTS`:
+
+```bash
+export CM_AGENT_PYTHON_BIN='/usr/bin/python3.8'
+export CM_AGENT_PYTHON_PACKAGES='python38 python38-devel python38-pip'
+export CM_AGENT_PYTHON_STRICT_VERSION='true'
+```
+
+The updated scripts validate this after the CM agent package is installed:
+
+```bash
+/opt/cloudera/cm-agent/bin/python --version
+```
+
+Expected output:
+
+```text
+Python 3.8.x
+```
+
+If the agent exits with status `126`, check these first:
+
+```bash
+ls -l /opt/cloudera/cm-agent/bin/python
+/opt/cloudera/cm-agent/bin/python --version
+ls -l /usr/bin/python3.8
+systemctl status cloudera-scm-agent -l --no-pager
+```
+
+## Update: Java SafeLogic FIPS setup required before CM startup
+
+During testing on RHEL 8.10 FIPS with CM 7.13.1 and CDP Runtime 7.3.1, CM Server failed with:
+
+```text
+java.security.KeyManagementException: FIPS mode: only SunJSSE TrustManagers may be used
+```
+
+The fix is not to disable FIPS. The SafeLogic jars must be configured for the Java runtime before CM Server starts.
+
+The scripts now do this automatically in `04_install_java11_fips_runtime.sh`, `10_configure_cm_agent.sh`, and `12_start_cm_services.sh`:
+
+1. Copy the staged SafeLogic jars from the configurable versioned source directory:
+
+```bash
+/opt/cloudera/fips-jars/cdp-7.1.9
+```
+
+into the active Java FIPS directory:
+
+```bash
+/opt/cloudera/fips
+```
+
+The active directory should contain:
+
+```bash
+/opt/cloudera/fips/ccj-3.0.2.1.jar
+/opt/cloudera/fips/bctls-safelogic.jar
+```
+
+2. Set ownership and permissions:
+
+```bash
+chown root:root /opt/cloudera/fips/*.jar
+chmod 0644 /opt/cloudera/fips/*.jar
+```
+
+3. Write `/etc/profile.d/ccj.sh` with the required `JDK_JAVA_OPTIONS` module path.
+
+4. Patch the active Java 11 security files:
+
+```bash
+$JAVA_HOME/conf/security/java.policy
+$JAVA_HOME/conf/security/java.security
+```
+
+The script backs up both files before patching them.
+
+5. Validate that Java loads these providers:
+
+```text
+Provider: CCJ
+Provider: BCJSSE
+```
+
+6. For CM Server, write active FIPS options into:
+
+```bash
+/etc/default/cloudera-scm-server
+```
+
+including:
+
+```bash
+-Dcom.cloudera.cmf.fipsMode=true
+-Dcom.safelogic.cryptocomply.fips.approved_only=true
+-Dcom.cloudera.cloudera.cmf.fipsMode.jdk11plus.ccj.jar.path=/opt/cloudera/fips/ccj-3.0.2.1.jar
+-Dcom.cloudera.cloudera.cmf.fipsMode.jdk11plus.ccj.moduleName=com.safelogic.cryptocomply.fips.core
+-Dcom.cloudera.cloudera.cmf.fipsMode.jdk11plus.bctls.jar.path=/opt/cloudera/fips/bctls-safelogic.jar
+-Dcom.cloudera.cloudera.cmf.fipsMode.jdk11plus.bctls.moduleName=bctls.safelogic
+```
+
+The double `cloudera.cloudera` in the JDK 11+ property names is intentional because that is how the CM defaults template shows the FIPS properties.
+
+### Important distinction
+
+There are now three SafeLogic locations to understand:
+
+```text
+/opt/cloudera/fips-jars/cdp-7.1.9
+```
+
+Versioned staging location. This is where the SafeLogic tarball is extracted/copied first. CDP 7.3.1 currently uses the same jars as CDP 7.1.9.
+
+```text
+/opt/cloudera/fips
+```
+
+Active Java FIPS provider location. Java and CM use this before CM Server starts.
+
+```text
+/opt/cloudera/parcels/CFM-*/TOOLKIT/lib
+```
+
+CFM/NiFi FIPS location. This does not exist until the CFM parcel is activated. Run `14_install_cfm_fips_jars.sh` only after the CFM parcel is downloaded, distributed, and activated in Cloudera Manager.
+
+### Manual validation commands
+
+Use these if you need to confirm Java FIPS setup manually:
+
+```bash
+source /etc/profile.d/ccj.sh
+java -version
+java -p /opt/cloudera/fips/ --list-modules | grep -E 'cryptocomply|bctls' || true
+```
+
+Provider validation:
+
+```bash
+cat > /root/ListSecurityProviders.java <<'JAVACODE'
+import java.security.Provider;
+import java.security.Security;
+public class ListSecurityProviders {
+  public static void main(String[] args) {
+    for (Provider provider : Security.getProviders()) {
+      System.out.println("Provider: " + provider.getName());
+      System.out.println("Info: " + provider.getInfo());
+    }
+  }
+}
+JAVACODE
+
+source /etc/profile.d/ccj.sh
+java /root/ListSecurityProviders.java | egrep 'Provider:|CCJ|BCJSSE|Bouncy|CryptoComply'
+```
+
+Expected output includes:
+
+```text
+Provider: CCJ
+Provider: BCJSSE
 ```

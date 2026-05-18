@@ -121,6 +121,47 @@ pg_service_name() { echo "postgresql-${PG_MAJOR:-14}"; }
 pg_bin_dir() { echo "/usr/pgsql-${PG_MAJOR:-14}/bin"; }
 pg_default_data_dir() { echo "/var/lib/pgsql/${PG_MAJOR:-14}/data"; }
 
+java_home_target() {
+  if [[ -n "${CUSTOM_JAVA_HOME:-}" ]]; then
+    echo "$CUSTOM_JAVA_HOME"
+  else
+    echo "${JAVA_HOME_TARGET:-/usr/lib/jvm/java-11-openjdk}"
+  fi
+}
+
+ensure_java_default() {
+  local java_home java_bin resolved_java
+  java_home="$(java_home_target)"
+  java_bin="${java_home}/bin/java"
+
+  if [[ ! -x "$java_bin" ]]; then
+    resolved_java="$(readlink -f "$(command -v java 2>/dev/null || true)" 2>/dev/null || true)"
+    if [[ -n "$resolved_java" && "$resolved_java" == *java-11* ]]; then
+      java_bin="$resolved_java"
+      java_home="$(dirname "$(dirname "$resolved_java")")"
+    else
+      echo "[WARN] Could not find Java 11 at ${java_bin}; validate_java_11 will perform final validation."
+      return 0
+    fi
+  fi
+
+  export JAVA_HOME="$java_home"
+  export PATH="$JAVA_HOME/bin:$PATH"
+
+  if command -v alternatives >/dev/null 2>&1; then
+    alternatives --set java "$java_bin" >/dev/null 2>&1 || true
+  fi
+
+  cat >/etc/profile.d/cloudera-java.sh <<EOFJAVA
+export JAVA_HOME='${JAVA_HOME}'
+export PATH=\$JAVA_HOME/bin:\$PATH
+EOFJAVA
+
+  cat >/etc/default/cloudera-java <<EOFJAVADEFAULT
+export JAVA_HOME='${JAVA_HOME}'
+EOFJAVADEFAULT
+}
+
 validate_java_11() {
   local java_bin version_line detected
   if [[ -n "${CUSTOM_JAVA_HOME:-}" ]]; then
@@ -153,8 +194,386 @@ validate_java_11() {
   echo "[OK] Java ${JAVA_MAJOR:-11} validation passed"
 }
 
+# CM 7.13.x agent on RHEL 8 x86_64 needs a supported Python 3 runtime.
+# Generic /usr/bin/python3 on RHEL 8 is usually Python 3.6 and is not enough.
+# The CM agent launcher selects the highest supported python3.x and failed in testing
+# when only Python 3.6 existed, resolving to /usr/local/bin/ and exiting 126.
+required_agent_python_bin() {
+  echo "${CM_AGENT_PYTHON_BIN:-/usr/bin/python3.8}"
+}
+
+install_required_agent_python() {
+  local pybin
+  pybin="$(required_agent_python_bin)"
+
+  if [[ -x "$pybin" ]]; then
+    echo "[OK] Required CM agent Python present: $pybin ($($pybin --version 2>&1))"
+    return 0
+  fi
+
+  echo "==== Installing required CM agent Python runtime ===="
+  echo "Required Python binary: $pybin"
+
+  if [[ "${CM_AGENT_PYTHON_PACKAGES:-python38 python38-devel python38-pip}" == "" ]]; then
+    echo "[ERROR] CM_AGENT_PYTHON_PACKAGES is empty and $pybin is missing."
+    exit 1
+  fi
+
+  # RHEL 8 provides python38 as AppStream packages on the RHUI images used in testing.
+  # If the module exists but packages are not visible, enabling the module is harmless.
+  dnf module enable -y python38 >/dev/null 2>&1 || true
+  dnf install -y ${CM_AGENT_PYTHON_PACKAGES:-python38 python38-devel python38-pip}
+
+  if [[ ! -x "$pybin" ]]; then
+    echo "[ERROR] Required CM agent Python binary still missing after install: $pybin"
+    echo "Available Python binaries:"
+    ls -l /usr/bin/python* /usr/local/bin/python* 2>/dev/null || true
+    exit 1
+  fi
+
+  echo "[OK] Required CM agent Python installed: $pybin ($($pybin --version 2>&1))"
+}
+
+validate_cm_agent_python_wrapper() {
+  local wrapper pybin version rc
+  wrapper="/opt/cloudera/cm-agent/bin/python"
+  pybin="$(required_agent_python_bin)"
+
+  if [[ ! -e "$wrapper" ]]; then
+    echo "[INFO] CM agent Python wrapper not present yet: $wrapper"
+    return 0
+  fi
+
+  if [[ ! -x "$pybin" ]]; then
+    echo "[ERROR] Required CM agent Python is missing: $pybin"
+    exit 1
+  fi
+
+  set +e
+  version="$($wrapper --version 2>&1)"
+  rc=$?
+  set -e
+  echo "CM agent Python wrapper: $wrapper"
+  echo "CM agent Python wrapper version output: $version"
+
+  if [[ $rc -ne 0 ]]; then
+    echo "[ERROR] CM agent Python wrapper failed with exit code $rc."
+    echo "This usually means the selected Python executable is wrong or missing."
+    echo "Check /opt/cloudera/cm-agent/bin/python3.8 and install python38."
+    exit 1
+  fi
+
+  if [[ "$version" != *"Python 3.8"* && "${CM_AGENT_PYTHON_STRICT_VERSION:-true}" == "true" ]]; then
+    echo "[ERROR] Expected CM agent wrapper to use Python 3.8, got: $version"
+    exit 1
+  fi
+
+  echo "[OK] CM agent Python wrapper is usable."
+}
+
 ensure_line() {
   local file="$1"
   local line="$2"
   grep -qxF "$line" "$file" 2>/dev/null || echo "$line" >> "$file"
+}
+
+java_fips_dir() { echo "${JAVA_FIPS_DIR:-/opt/cloudera/fips}"; }
+java_fips_ccj_jar() { echo "${JAVA_FIPS_CCJ_JAR:-${FIPS_CCJ_JAR:-ccj-3.0.2.1.jar}}"; }
+java_fips_bctls_jar() { echo "${JAVA_FIPS_BCTLS_JAR:-bctls-safelogic.jar}"; }
+java_fips_ccj_module() { echo "${JAVA_FIPS_CCJ_MODULE:-com.safelogic.cryptocomply.fips.core}"; }
+java_fips_bctls_module() { echo "${JAVA_FIPS_BCTLS_MODULE:-bctls.safelogic}"; }
+
+stage_java_fips_jars() {
+  local src_dir active_dir ccj_src bctls_src ccj_dest bctls_dest
+  src_dir="${FIPS_JAR_SOURCE_DIR:-}"
+  active_dir="$(java_fips_dir)"
+  ccj_src="${src_dir}/$(java_fips_ccj_jar)"
+  bctls_src="${src_dir}/${FIPS_BCTLS_JAR:-bctls.jar}"
+  ccj_dest="${active_dir}/$(java_fips_ccj_jar)"
+  bctls_dest="${active_dir}/$(java_fips_bctls_jar)"
+
+  if [[ -z "$src_dir" ]]; then
+    echo "[ERROR] FIPS_JAR_SOURCE_DIR is not set. Stage the SafeLogic jars and update EXPORTS."
+    exit 1
+  fi
+  if [[ ! -f "$ccj_src" ]]; then
+    echo "[ERROR] Missing SafeLogic CCJ jar: $ccj_src"
+    exit 1
+  fi
+  if [[ ! -f "$bctls_src" ]]; then
+    echo "[ERROR] Missing SafeLogic BCTLS jar: $bctls_src"
+    exit 1
+  fi
+
+  mkdir -p "$active_dir"
+  cp -af "$ccj_src" "$ccj_dest"
+  cp -af "$bctls_src" "$bctls_dest"
+  chown root:root "$ccj_dest" "$bctls_dest"
+  chmod 0644 "$ccj_dest" "$bctls_dest"
+
+  echo "[OK] Active Java FIPS jars staged:"
+  ls -lh "$active_dir"
+}
+
+write_jdk_java_options_profile() {
+  local active_dir ccj_jar bctls_jar ccj_mod bctls_mod opts
+  active_dir="$(java_fips_dir)"
+  ccj_jar="${active_dir}/$(java_fips_ccj_jar)"
+  bctls_jar="${active_dir}/$(java_fips_bctls_jar)"
+  ccj_mod="$(java_fips_ccj_module)"
+  bctls_mod="$(java_fips_bctls_module)"
+  opts="--module-path=${ccj_jar}:${bctls_jar} --add-exports java.base/sun.security.provider=${ccj_mod} --add-modules ${ccj_mod},${bctls_mod}"
+
+  cat >/etc/profile.d/ccj.sh <<EOFCCJ
+export JDK_JAVA_OPTIONS='${opts}'
+EOFCCJ
+  chmod 0755 /etc/profile.d/ccj.sh
+  export JDK_JAVA_OPTIONS="$opts"
+  echo "[OK] Wrote /etc/profile.d/ccj.sh"
+}
+
+patch_java_policy_for_fips() {
+  local java_home policy_file active_dir ccj_jar bctls_jar tmp
+  java_home="${JAVA_HOME:-$(java_home_target)}"
+  policy_file="${java_home}/conf/security/java.policy"
+  active_dir="$(java_fips_dir)"
+  ccj_jar="${active_dir}/$(java_fips_ccj_jar)"
+  bctls_jar="${active_dir}/$(java_fips_bctls_jar)"
+
+  if [[ ! -f "$policy_file" ]]; then
+    echo "[ERROR] Missing Java policy file: $policy_file"
+    exit 1
+  fi
+
+  cp -a "$policy_file" "${policy_file}.bak.$(date +%Y%m%d_%H%M%S)"
+  tmp="$(mktemp)"
+  awk '
+    /BEGIN MANAGED BY cfm_fips_install - SafeLogic permissions/ {skip=1; next}
+    /END MANAGED BY cfm_fips_install - SafeLogic permissions/ {skip=0; next}
+    skip != 1 {print}
+  ' "$policy_file" > "$tmp"
+
+  cat >> "$tmp" <<EOFPOLICY
+
+// BEGIN MANAGED BY cfm_fips_install - SafeLogic permissions
+grant codeBase "file:${ccj_jar}" {
+    permission java.security.AllPermission;
+};
+
+grant codeBase "file:${bctls_jar}" {
+    permission java.security.AllPermission;
+};
+// END MANAGED BY cfm_fips_install - SafeLogic permissions
+EOFPOLICY
+
+  cat "$tmp" > "$policy_file"
+  rm -f "$tmp"
+  echo "[OK] Patched ${policy_file}"
+}
+
+patch_java_security_for_fips() {
+  local java_home security_file
+  java_home="${JAVA_HOME:-$(java_home_target)}"
+  security_file="${java_home}/conf/security/java.security"
+
+  if [[ ! -f "$security_file" ]]; then
+    echo "[ERROR] Missing Java security file: $security_file"
+    exit 1
+  fi
+
+  cp -a "$security_file" "${security_file}.bak.$(date +%Y%m%d_%H%M%S)"
+
+  JAVA_SECURITY_FILE="$security_file" python3 - <<'PY'
+from pathlib import Path
+import os
+
+p = Path(os.environ["JAVA_SECURITY_FILE"])
+text = p.read_text()
+lines = text.splitlines()
+
+begin = "# BEGIN MANAGED BY cfm_fips_install - SafeLogic providers"
+end = "# END MANAGED BY cfm_fips_install - SafeLogic providers"
+
+# Remove previous managed block, if present.
+filtered = []
+skip = False
+for line in lines:
+    if line.strip() == begin:
+        skip = True
+        continue
+    if line.strip() == end:
+        skip = False
+        continue
+    if not skip:
+        filtered.append(line)
+
+new_lines = []
+for line in filtered:
+    stripped = line.strip()
+    if stripped.startswith("security.useSystemPropertiesFile="):
+        if not line.lstrip().startswith("#"):
+            new_lines.append("# " + line)
+        else:
+            new_lines.append(line)
+        continue
+    if stripped.startswith("security.provider."):
+        if not line.lstrip().startswith("#"):
+            new_lines.append("# " + line)
+        else:
+            new_lines.append(line)
+        continue
+    if stripped.startswith("fips.provider."):
+        if not line.lstrip().startswith("#"):
+            new_lines.append("# " + line)
+        else:
+            new_lines.append(line)
+        continue
+    if stripped.startswith("ssl.KeyManagerFactory.algorithm="):
+        if not line.lstrip().startswith("#"):
+            new_lines.append("# " + line)
+        else:
+            new_lines.append(line)
+        continue
+    if stripped.startswith("ssl.TrustManagerFactory.algorithm="):
+        if not line.lstrip().startswith("#"):
+            new_lines.append("# " + line)
+        else:
+            new_lines.append(line)
+        continue
+    new_lines.append(line)
+
+block = f"""
+
+{begin}
+security.useSystemPropertiesFile=false
+
+security.provider.1=com.safelogic.cryptocomply.jcajce.provider.CryptoComplyFipsProvider
+security.provider.2=org.bouncycastle.jsse.provider.BouncyCastleJsseProvider fips:CCJ
+security.provider.3=SUN
+security.provider.4=SunRsaSign
+security.provider.5=SunEC
+security.provider.6=SunJSSE
+security.provider.7=SunJCE
+security.provider.8=SunJGSS
+security.provider.9=SunSASL
+security.provider.10=XMLDSig
+security.provider.11=SunPCSC
+security.provider.12=JdkLDAP
+security.provider.13=JdkSASL
+
+fips.provider.1=com.safelogic.cryptocomply.jcajce.provider.CryptoComplyFipsProvider
+fips.provider.2=org.bouncycastle.jsse.provider.BouncyCastleJsseProvider fips:CCJ
+fips.provider.3=SUN
+fips.provider.4=SunRsaSign
+fips.provider.5=SunEC
+fips.provider.6=SunJSSE
+fips.provider.7=SunJCE
+fips.provider.8=SunJGSS
+fips.provider.9=SunSASL
+fips.provider.10=XMLDSig
+fips.provider.11=SunPCSC
+fips.provider.12=JdkLDAP
+fips.provider.13=JdkSASL
+
+ssl.KeyManagerFactory.algorithm=X.509
+ssl.TrustManagerFactory.algorithm=PKIX
+{end}
+"""
+
+p.write_text("\n".join(new_lines).rstrip() + block + "\n")
+PY
+
+  echo "[OK] Patched ${security_file}"
+}
+
+validate_java_fips_providers() {
+  local tmpdir out
+  ensure_java_default
+  validate_java_11
+  if [[ -f /etc/profile.d/ccj.sh ]]; then
+    # shellcheck disable=SC1091
+    source /etc/profile.d/ccj.sh
+  fi
+
+  tmpdir="$(mktemp -d)"
+  cat >"$tmpdir/ListSecurityProviders.java" <<'EOFJAVA'
+import java.security.Provider;
+import java.security.Security;
+public class ListSecurityProviders {
+  public static void main(String[] args) {
+    for (Provider provider : Security.getProviders()) {
+      System.out.println("Provider: " + provider.getName());
+      System.out.println("Info: " + provider.getInfo());
+    }
+  }
+}
+EOFJAVA
+  out="$(java "$tmpdir/ListSecurityProviders.java" 2>&1 || true)"
+  rm -rf "$tmpdir"
+  echo "$out" | egrep 'Provider:|CCJ|BCJSSE|Bouncy|CryptoComply' || true
+
+  if ! echo "$out" | grep -q 'Provider: CCJ'; then
+    echo "[ERROR] Java FIPS provider validation failed: Provider CCJ not loaded."
+    exit 1
+  fi
+  if ! echo "$out" | grep -q 'Provider: BCJSSE'; then
+    echo "[ERROR] Java FIPS provider validation failed: Provider BCJSSE not loaded."
+    exit 1
+  fi
+  echo "[OK] Java FIPS providers loaded: CCJ and BCJSSE"
+}
+
+configure_java_fips_safelogic() {
+  if [[ "${CONFIGURE_JAVA_FIPS:-true}" != "true" ]]; then
+    echo "[INFO] CONFIGURE_JAVA_FIPS=false; skipping Java SafeLogic FIPS configuration."
+    return 0
+  fi
+
+  echo "==== Configuring Java SafeLogic FIPS providers ===="
+  ensure_java_default
+  validate_java_11
+  stage_java_fips_jars
+  write_jdk_java_options_profile
+  patch_java_policy_for_fips
+  patch_java_security_for_fips
+  validate_java_fips_providers
+}
+
+configure_cm_server_fips_opts() {
+  if [[ "${CONFIGURE_JAVA_FIPS:-true}" != "true" ]]; then
+    echo "[INFO] CONFIGURE_JAVA_FIPS=false; skipping CM Server FIPS options."
+    return 0
+  fi
+
+  local defaults active_dir ccj_jar bctls_jar ccj_mod bctls_mod tmp
+  defaults="/etc/default/cloudera-scm-server"
+  active_dir="$(java_fips_dir)"
+  ccj_jar="${active_dir}/$(java_fips_ccj_jar)"
+  bctls_jar="${active_dir}/$(java_fips_bctls_jar)"
+  ccj_mod="$(java_fips_ccj_module)"
+  bctls_mod="$(java_fips_bctls_module)"
+
+  touch "$defaults"
+  cp -a "$defaults" "${defaults}.bak.$(date +%Y%m%d_%H%M%S)"
+
+  tmp="$(mktemp)"
+  awk '
+    /BEGIN MANAGED BY cfm_fips_install - CM Server FIPS options/ {skip=1; next}
+    /END MANAGED BY cfm_fips_install - CM Server FIPS options/ {skip=0; next}
+    skip != 1 {print}
+  ' "$defaults" > "$tmp"
+
+  cat >> "$tmp" <<EOFCMF
+
+# BEGIN MANAGED BY cfm_fips_install - CM Server FIPS options
+export JDK_JAVA_OPTIONS="\${JDK_JAVA_OPTIONS:-} --module-path=${ccj_jar}:${bctls_jar} --add-exports java.base/sun.security.provider=${ccj_mod} --add-modules ${ccj_mod},${bctls_mod}"
+export CMF_JAVA_OPTS="\${CMF_JAVA_OPTS} -Dcom.cloudera.cmf.fipsMode=true -Dcom.safelogic.cryptocomply.fips.approved_only=true"
+export CMF_JAVA_OPTS="\${CMF_JAVA_OPTS} -Dcom.cloudera.cloudera.cmf.fipsMode.jdk11plus.ccj.jar.path=${ccj_jar} -Dcom.cloudera.cloudera.cmf.fipsMode.jdk11plus.ccj.moduleName=${ccj_mod}"
+export CMF_JAVA_OPTS="\${CMF_JAVA_OPTS} -Dcom.cloudera.cloudera.cmf.fipsMode.jdk11plus.bctls.jar.path=${bctls_jar} -Dcom.cloudera.cloudera.cmf.fipsMode.jdk11plus.bctls.moduleName=${bctls_mod}"
+# END MANAGED BY cfm_fips_install - CM Server FIPS options
+EOFCMF
+
+  cat "$tmp" > "$defaults"
+  rm -f "$tmp"
+  echo "[OK] Wrote CM Server FIPS options to ${defaults}"
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Cloudera Manager + CDP Base + CFM FIPS install configuration
-# Target default: RHEL 8.10 FIPS, CM 7.13.1, CDP Runtime 7.3.1, CFM 2.1.7.1001
+# Target default: RHEL 8.10 FIPS, CM 7.13.1, CDP Runtime 7.3.1, CFM 2.1.7.3000
 # ==============================================================================
 
 # ---- Cloudera archive credentials ----
@@ -32,6 +32,14 @@ export JAVA_MAJOR='11'
 export JAVA_INSTALL_MODE='system'
 export CUSTOM_JAVA_HOME=''
 export JAVA_HOME_TARGET='/usr/lib/jvm/java-11-openjdk'
+
+# ---- Cloudera Manager Agent Python ----
+# CM 7.13.x on RHEL 8 x86_64 requires a supported Python 3 runtime for the agent wrapper.
+# Do not rely on generic /usr/bin/python3 on RHEL 8; that is usually Python 3.6.
+# In testing, missing python3.8 caused /opt/cloudera/cm-agent/bin/python to exit 126.
+export CM_AGENT_PYTHON_BIN='/usr/bin/python3.8'
+export CM_AGENT_PYTHON_PACKAGES='python38 python38-devel python38-pip'
+export CM_AGENT_PYTHON_STRICT_VERSION='true'
 
 # ---- PostgreSQL ----
 # CDP 7.3.1 FIPS supports PostgreSQL 10 through 16.
@@ -88,16 +96,17 @@ export CDP_RUNTIME_VERSION='7.3.1'
 export CDP_PARCEL_REPO_URL=''
 
 # ---- CFM ----
-# For CFM 2.1.7, Cloudera published a 2.1.7.1001 hotfix build that includes RHEL8 artifacts.
+# CFM build must be consistent across CSD jars, parcel repo, and activated parcel directory.
+# Default uses the CFM 2.1.7.3000 RHEL8 parcel/CSD artifacts.
 # Change all CFM_* values together when moving CFM versions.
 export CFM_STREAM='cfm2'
-export CFM_VERSION='2.1.7.1001'
+export CFM_VERSION='2.1.7.3000'
 export CFM_OS_REPO='redhat8'
 export CFM_PARCEL_REPO_URL="https://archive.cloudera.com/p/${CFM_STREAM}/${CFM_VERSION}/${CFM_OS_REPO}/yum/tars/parcel/"
-export CFM_NIFI_CSD_JAR='NIFI-1.26.0.2.1.7.1001-5.jar'
-export CFM_NIFIREGISTRY_CSD_JAR='NIFIREGISTRY-1.26.0.2.1.7.1001-5.jar'
+export CFM_NIFI_CSD_JAR='NIFI-1.28.1.2.1.7.3000-45.jar'
+export CFM_NIFIREGISTRY_CSD_JAR='NIFIREGISTRY-1.28.1.2.1.7.3000-45.jar'
 # This is the activated parcel directory name under /opt/cloudera/parcels after CM activates the CFM parcel.
-export CFM_PARCEL_DIR_NAME='CFM-2.1.7.1001-5'
+export CFM_PARCEL_DIR_NAME='CFM-2.1.7.3000-45'
 export CFM_PARCEL_ROOT="/opt/cloudera/parcels/${CFM_PARCEL_DIR_NAME}"
 export CFM_TOOLKIT_LIB_DIR="${CFM_PARCEL_ROOT}/TOOLKIT/lib"
 
@@ -114,6 +123,17 @@ export FIPS_CCJ_JAR='ccj-3.0.2.1.jar'
 # Optional additional jars to copy into the CFM toolkit lib dir. Space-separated filenames.
 # Use this if your SafeLogic bundle requires provider/support jars beyond the two documented files.
 export FIPS_EXTRA_JARS=''
+
+# ---- Active Java FIPS provider configuration ----
+# Cloudera Base / Cloudera Manager FIPS requires the SafeLogic jars to be active under /opt/cloudera/fips
+# and Java security/policy files to be configured before CM Server starts. The scripts copy from
+# FIPS_JAR_SOURCE_DIR into JAVA_FIPS_DIR and rename bctls.jar to bctls-safelogic.jar for the active path.
+export CONFIGURE_JAVA_FIPS='true'
+export JAVA_FIPS_DIR='/opt/cloudera/fips'
+export JAVA_FIPS_CCJ_JAR='ccj-3.0.2.1.jar'
+export JAVA_FIPS_BCTLS_JAR='bctls-safelogic.jar'
+export JAVA_FIPS_CCJ_MODULE='com.safelogic.cryptocomply.fips.core'
+export JAVA_FIPS_BCTLS_MODULE='bctls.safelogic'
 
 # ---- NiFi FIPS runtime reminders ----
 export NIFI_SENSITIVE_PROPS_ALGORITHM='NIFI_PBKDF2_AES_GCM_256'

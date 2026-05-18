@@ -5,7 +5,9 @@ ROLE="${1:-}"
 log_init "09_install_cm_packages_${ROLE:-unknown}"
 need_root
 validate_platform
+ensure_java_default
 validate_java_11
+install_required_agent_python
 
 if [[ "$ROLE" != "manager" && "$ROLE" != "agent" ]]; then
   echo "Usage: sudo -E bash 09_install_cm_packages.sh manager|agent"
@@ -21,5 +23,6 @@ else
 fi
 
 rpm -qa | grep -E '^cloudera-manager' | sort || true
+validate_cm_agent_python_wrapper
 
 echo "[OK] CM packages installed for role=${ROLE}"

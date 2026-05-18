@@ -27,25 +27,8 @@ case "${JAVA_INSTALL_MODE:-system}" in
     ;;
 esac
 
-if [[ -n "${CUSTOM_JAVA_HOME:-}" ]]; then
-  export JAVA_HOME="$CUSTOM_JAVA_HOME"
-elif [[ -d "${JAVA_HOME_TARGET:-/usr/lib/jvm/java-11-openjdk}" ]]; then
-  export JAVA_HOME="${JAVA_HOME_TARGET:-/usr/lib/jvm/java-11-openjdk}"
-else
-  JAVA_HOME_CANDIDATE="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
-  export JAVA_HOME="$JAVA_HOME_CANDIDATE"
-fi
-
-cat >/etc/profile.d/cloudera-java.sh <<EOFJAVA
-export JAVA_HOME='${JAVA_HOME}'
-export PATH=\$JAVA_HOME/bin:\$PATH
-EOFJAVA
-
-# Cloudera packages read Java through environment/service defaults on many installs.
-cat >/etc/default/cloudera-java <<EOFJAVADEFAULT
-export JAVA_HOME='${JAVA_HOME}'
-EOFJAVADEFAULT
-
+ensure_java_default
 validate_java_11
+configure_java_fips_safelogic
 
-echo "[OK] Java runtime ready. JAVA_HOME=${JAVA_HOME}"
+echo "[OK] Java runtime ready. JAVA_HOME=${JAVA_HOME:-$(java_home_target)}"

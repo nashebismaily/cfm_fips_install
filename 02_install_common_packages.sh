@@ -7,8 +7,8 @@ validate_platform
 
 COMMON_PACKAGES=(
   wget curl vim tar unzip bind-utils net-tools lsof which rsync jq
-  chrony rng-tools nmap-ncat tcpdump telnet perl iproute rpcbind
-  python3 python3-pip python3-devel gcc gcc-c++ make openssl-devel libffi-devel
+  chrony rng-tools nmap-ncat tcpdump telnet perl perl-IPC-Run iproute rpcbind
+  python3 python3-pip python3-devel python38 python38-devel python38-pip gcc gcc-c++ make openssl-devel libffi-devel
   redhat-lsb-core policycoreutils-python-utils
 )
 
@@ -27,12 +27,16 @@ systemctl enable rngd || true
 systemctl restart rngd || true
 
 echo
-echo "Python: $(python3 --version 2>/dev/null || echo missing)"
+echo "System Python: $(python3 --version 2>/dev/null || echo missing)"
+echo "CM Agent Python: $(/usr/bin/python3.8 --version 2>/dev/null || echo missing)"
+install_required_agent_python
 which nc || true
 which jq || true
 
 if [[ ${#FAILED[@]} -gt 0 ]]; then
-  echo "[WARN] Failed packages: ${FAILED[*]}"
+  echo "[ERROR] Failed packages: ${FAILED[*]}"
+  echo "Fix the failed packages before continuing."
+  exit 1
 else
   echo "[OK] Common packages installed"
 fi
