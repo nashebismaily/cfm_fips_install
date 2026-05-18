@@ -213,9 +213,13 @@ export CFM_OS_REPO='redhat8'
 export CFM_NIFI_CSD_JAR='NIFI-1.28.1.2.1.7.3000-45.jar'
 export CFM_NIFIREGISTRY_CSD_JAR='NIFIREGISTRY-1.28.1.2.1.7.3000-45.jar'
 export CFM_PARCEL_DIR_NAME='CFM-2.1.7.3000-45'
+```
 
 Important: The CFM CSD jars and the CFM parcel repository must come from the same CFM build. For this profile, the CSD jars are `NIFI-1.28.1.2.1.7.3000-45.jar` and `NIFIREGISTRY-1.28.1.2.1.7.3000-45.jar`, and the parcel repository is `https://archive.cloudera.com/p/cfm2/2.1.7.3000/redhat8/yum/tars/parcel/`. Do not mix these with 2.1.7.1001 artifacts.
 
+Keep the SafeLogic jar values as:
+
+```bash
 export FIPS_JAR_SOURCE_DIR='/opt/cloudera/fips-jars/cdp-7.1.9'
 export FIPS_BCTLS_JAR='bctls.jar'
 export FIPS_CCJ_JAR='ccj-3.0.2.1.jar'
@@ -442,6 +446,33 @@ The FIPS requirements for CDP 7.1.9 supported PostgreSQL up to 14, so PostgreSQL
 
 If a future customer uses external PostgreSQL, the scripts should be adjusted to skip local PostgreSQL installation and use external DB connection settings. That is not the current default.
 
+### Default database names, users, and passwords
+
+The scripts create these PostgreSQL databases by default on the manager host. These are the values you should use in the Cloudera Manager UI unless you changed `EXPORTS`.
+
+| Purpose | Database | Username | Password | Notes |
+|---|---|---|---|---|
+| Cloudera Manager Server | `scm` | `scm` | `ClouderaCM_2026` | Used by `scm_prepare_database.sh`; not usually entered in the CM UI after install |
+| Reports Manager | `rman` | `rman` | `Rman_DB_2026` | Enter this in the CM Management Service Reports Manager database screen |
+| NiFi Registry | `nifireg` | `nifireg` | `Registry_DB_2026` | Enter this in the NiFi Registry database configuration |
+| Hue, optional | `hue` | `hue` | `Hue_DB_2026` | Created only if `CREATE_EXTRA_DBS=true` |
+| Hive Metastore, optional | `metastore` | `hive` | `Hive_DB_2026` | Created only if `CREATE_EXTRA_DBS=true` |
+| Ranger, optional | `ranger` | `rangeradmin` | `Ranger_DB_2026` | Created only if `CREATE_EXTRA_DBS=true` |
+
+The database host for UI configuration is normally the manager private DNS name:
+
+```text
+ip-10-0-3-31.us-east-2.compute.internal
+```
+
+The PostgreSQL port is:
+
+```text
+5432
+```
+
+If your manager host is different, use the value of `MANAGER_HOST` from `EXPORTS`.
+
 ---
 
 ## 11. Cloudera Manager deployment sequence
@@ -489,6 +520,197 @@ https://archive.cloudera.com/p/cfm2/2.1.7.3000/redhat8/yum/tars/parcel/
 ```
 
 Do not mix 2.1.7.3000 CSDs with older 2.1.7.1001 parcel artifacts, or the reverse.
+
+### NiFi Registry PostgreSQL configuration
+
+When adding **NiFi Registry** in Cloudera Manager, replace the default embedded H2 values with PostgreSQL. Use these values unless you changed the database variables in `EXPORTS`:
+
+| CM field | Value |
+|---|---|
+| NiFi Registry JDBC Url | `jdbc:postgresql://ip-10-0-3-31.us-east-2.compute.internal:5432/nifireg` |
+| NiFi Registry JDBC Driver | `org.postgresql.Driver` |
+| NiFi Registry Database Driver Directory | `/usr/share/java` |
+| NiFi Registry Database Username | `nifireg` |
+| NiFi Registry Database Password | `Registry_DB_2026` |
+| Maximum connection in db pool | `5` |
+| Enable database sql debugging | `false` |
+
+If your manager host is different, replace `ip-10-0-3-31.us-east-2.compute.internal` with `$MANAGER_HOST`.
+
+Install the PostgreSQL JDBC driver on the host where NiFi Registry will run:
+
+```bash
+sudo -i
+dnf install -y postgresql-jdbc
+ls -lh /usr/share/java | grep -i postgres
+find /usr/share/java -iname '*postgres*.jar' -print
+```
+
+If installing `postgresql-jdbc` changes the active Java alternative, set Java back to 11:
+
+```bash
+alternatives --config java
+java -version
+```
+
+Before saving the NiFi Registry config in CM, you can test the database connection from the NiFi Registry host:
+
+```bash
+PGPASSWORD='Registry_DB_2026' /usr/pgsql-14/bin/psql \
+  -h ip-10-0-3-31.us-east-2.compute.internal \
+  -p 5432 \
+  -U nifireg \
+  -d nifireg \
+  -c "select current_database(), current_user;"
+```
+
+Expected result:
+
+```text
+ current_database | current_user
+------------------+--------------
+ nifireg          | nifireg
+```
+
+
+### NiFi post-install FIPS configuration
+
+When adding **NiFi** in Cloudera Manager, some FIPS-related properties may not appear in the initial Add Service wizard. That is expected. Add the NiFi service first, then configure these values after the service exists and before considering the service complete.
+
+Before starting NiFi, make sure `14_install_cfm_fips_jars.sh` has already been run on the host where the NiFi role will run. For example, on the NiFi host:
+
+```bash
+cd /root/cfm_fips_install
+source ./EXPORTS
+sudo -E bash 14_install_cfm_fips_jars.sh
+
+ls -lh /opt/cloudera/parcels/CFM-2.1.7.3000-45/TOOLKIT/lib | egrep 'bctls|ccj'
+```
+
+Expected files and permissions:
+
+```text
+-rw-r--r--. 1 root root ... bctls.jar
+-rw-r--r--. 1 root root ... ccj-3.0.2.1.jar
+```
+
+If NiFi and NiFi Registry run only on the agent host, run script 14 only on that agent. You do not need to run script 14 on the CM Server host unless you place NiFi or NiFi Registry roles there.
+
+After the NiFi service is created, go to:
+
+```text
+NiFi -> Configuration
+```
+
+Search for:
+
+```text
+sensitive
+```
+
+Set these values:
+
+```properties
+nifi.sensitive.props.algorithm=NIFI_PBKDF2_AES_GCM_256
+nifi.sensitive.props.key=<real key, at least 12 characters>
+```
+
+Use a real environment-specific key. Do not leave the placeholder value from `EXPORTS` in a shared or customer environment.
+
+Next, add the SafeLogic/BCTLS Java module arguments to the NiFi bootstrap configuration. In CM, search for:
+
+```text
+bootstrap
+```
+
+Use this field:
+
+```text
+NiFi Node Advanced Configuration Snippet (Safety Valve) for staging/bootstrap.conf.xml
+```
+
+Add the following XML snippet:
+
+```xml
+<property>
+  <name>java.arg.200</name>
+  <value>--module-path=/opt/cloudera/parcels/CFM-2.1.7.3000-45/TOOLKIT/lib/ccj-3.0.2.1.jar:/opt/cloudera/parcels/CFM-2.1.7.3000-45/TOOLKIT/lib/bctls.jar</value>
+</property>
+<property>
+  <name>java.arg.201</name>
+  <value>--add-exports=java.base/sun.security.provider=com.safelogic.cryptocomply.fips.core</value>
+</property>
+<property>
+  <name>java.arg.202</name>
+  <value>--add-modules=com.safelogic.cryptocomply.fips.core,bctls</value>
+</property>
+<property>
+  <name>java.arg.203</name>
+  <value>-Dcom.safelogic.cryptocomply.fips.approved_only=true</value>
+</property>
+<property>
+  <name>java.arg.204</name>
+  <value>-Djdk.tls.trustNameService=true</value>
+</property>
+<property>
+  <name>java.arg.205</name>
+  <value>-Djdk.tls.ephemeralDHKeySize=2048</value>
+</property>
+<property>
+  <name>java.arg.206</name>
+  <value>-Dorg.bouncycastle.jsse.client.assumeOriginalHostName=true</value>
+</property>
+```
+
+For the CFM 2.1.7.3000 parcel used in this kit, the module names validate as:
+
+```text
+ccj-3.0.2.1.jar -> com.safelogic.cryptocomply.fips.core
+bctls.jar       -> bctls
+```
+
+You can confirm on the NiFi host with:
+
+```bash
+/usr/lib/jvm/java-11-openjdk/bin/jar \
+  --file=/opt/cloudera/parcels/CFM-2.1.7.3000-45/TOOLKIT/lib/ccj-3.0.2.1.jar \
+  --describe-module | head -5
+
+/usr/lib/jvm/java-11-openjdk/bin/jar \
+  --file=/opt/cloudera/parcels/CFM-2.1.7.3000-45/TOOLKIT/lib/bctls.jar \
+  --describe-module | head -5
+```
+
+After saving the NiFi configuration, start or restart NiFi. Then validate that CM generated the bootstrap arguments correctly:
+
+```bash
+sudo -i
+
+NIFI_PROC_DIR=$(ls -td /var/run/cloudera-scm-agent/process/*NIFI* /var/run/cloudera-scm-agent/process/*nifi* 2>/dev/null | head -1)
+echo "$NIFI_PROC_DIR"
+
+grep -n "java.arg.20\|module-path\|add-modules\|safelogic\|bctls" "$NIFI_PROC_DIR/bootstrap.conf"
+```
+
+Expected output includes:
+
+```text
+java.arg.200=--module-path=/opt/cloudera/parcels/CFM-2.1.7.3000-45/TOOLKIT/lib/ccj-3.0.2.1.jar:/opt/cloudera/parcels/CFM-2.1.7.3000-45/TOOLKIT/lib/bctls.jar
+java.arg.201=--add-exports=java.base/sun.security.provider=com.safelogic.cryptocomply.fips.core
+java.arg.202=--add-modules=com.safelogic.cryptocomply.fips.core,bctls
+java.arg.203=-Dcom.safelogic.cryptocomply.fips.approved_only=true
+java.arg.204=-Djdk.tls.trustNameService=true
+java.arg.205=-Djdk.tls.ephemeralDHKeySize=2048
+java.arg.206=-Dorg.bouncycastle.jsse.client.assumeOriginalHostName=true
+```
+
+If NiFi fails with this error:
+
+```text
+java.security.NoSuchAlgorithmException: X.509 KeyManagerFactory not available
+```
+
+then the bootstrap module arguments are not being applied to the NiFi JVM. Recheck the `staging/bootstrap.conf.xml` safety valve and confirm the generated `bootstrap.conf` contains `java.arg.200` through `java.arg.206`.
 
 ---
 
@@ -815,45 +1037,3 @@ systemctl status cloudera-scm-agent -l --no-pager
 ```
 
 Expected Python wrapper output is Python 3.8.x.
----
-
-## Hue / PostgreSQL FIPS psycopg2 readiness
-
-Cloudera Manager Host Inspector may warn that PostgreSQL-backed Hue requires `psycopg2` version `2.9.5` or higher. On FIPS hosts, do **not** install `psycopg2-binary`, because the binary wheel bundles its own OpenSSL libraries. This kit installs `psycopg2` from source using the PGDG `pg_config` path.
-
-The default settings in `EXPORTS` are:
-
-```bash
-export INSTALL_HUE_FIPS_PSYCOPG2='true'
-export HUE_PSYCOPG2_VERSION='2.9.9'
-export HUE_PSYCOPG2_PYTHON_BIN='/usr/bin/python3.8'
-```
-
-The scripts install the required build prerequisites, including:
-
-```bash
-perl-IPC-Run gcc python38-devel postgresql${PG_MAJOR}-devel openssl-devel libffi-devel
-```
-
-Because PGDG places `pg_config` under `/usr/pgsql-${PG_MAJOR}/bin`, the script exports:
-
-```bash
-export PATH="/usr/pgsql-${PG_MAJOR}/bin:$PATH"
-export PG_CONFIG="/usr/pgsql-${PG_MAJOR}/bin/pg_config"
-```
-
-The validation checks both Python paths used by Host Inspector style checks:
-
-```bash
-/usr/bin/python3.8 -c 'import psycopg2; print(psycopg2.__version__)'
-/opt/cloudera/cm-agent/bin/python -c 'import psycopg2; print(psycopg2.__version__)'
-```
-
-Expected result:
-
-```text
-2.9.9
-```
-
-Run `15_validate_ready_state.sh` after installation to confirm psycopg2 visibility.
-
