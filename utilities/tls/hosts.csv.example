@@ -1,5 +1,4 @@
-# host_id,common_name,san_dns,san_ip
-# san_dns and san_ip support semicolon-separated values.
-# common_name should normally be the host FQDN used by browsers and by CM configs.
-nifi-agent-1,ip-10-0-11-156.us-east-2.compute.internal,ip-10-0-11-156.us-east-2.compute.internal;localhost,10.0.11.156;127.0.0.1
-nifi-manager,ip-10-0-3-31.us-east-2.compute.internal,ip-10-0-3-31.us-east-2.compute.internal;localhost,10.0.3.31;127.0.0.1
+# hostname,cn,san_dns,san_ip
+# san_dns and san_ip can contain pipe-separated values. The hostname and CN are automatically included as DNS SANs.
+ip-10-0-0-64.us-east-2.compute.internal,ip-10-0-0-64.us-east-2.compute.internal,ip-10-0-0-64.us-east-2.compute.internal|cm.example.com,10.0.0.64
+ip-10-0-8-197.us-east-2.compute.internal,ip-10-0-8-197.us-east-2.compute.internal,ip-10-0-8-197.us-east-2.compute.internal,10.0.8.197

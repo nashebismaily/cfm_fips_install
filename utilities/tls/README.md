@@ -1,163 +1,178 @@
-# Manual TLS Utilities for CFM FIPS Installs
+# Cloudera Auto-TLS Use Case 3 Utilities
 
-These utilities generate host private keys, CSRs, signed certificates, PKCS12 keystores, and PKCS12 truststores for manual TLS on Cloudera Flow Management hosts.
+These utilities support Cloudera Manager Auto-TLS **Use Case 3: Enabling Auto-TLS with Existing Certificates**. This is the flow where certificates are signed by your existing CA, staged on the Cloudera Manager server, and enabled through the `generateCmca` API.
 
-The default output format is **PKCS12**, not JKS. This matters for FIPS. Cloudera's CFM documentation states that JKS is not FIPS compliant by default, and NiFi/NiFi Registry TLS store types can be `PKCS12`, `JKS`, or `BCFKS`. Use `PKCS12` or `BCFKS` for FIPS-oriented deployments.
+Everything is driven by variables in `tls.env` and host inventory in `hosts.csv`.
 
-## Files
+## What is configurable
+
+`tls.env` controls:
+
+- Auto-TLS work directory, default `/tmp/auto-tls`
+- CM Auto-TLS location, default `/opt/cloudera/AutoTLS`
+- CM API host, protocol, port, API version, username, and password
+- SSH user, SSH password or SSH private key file
+- keystore and truststore passwords
+- CA chain path
+- whether to generate keys/CSRs or use customer-provided artifacts
+- key size, digest, and CSR subject values
+
+`hosts.csv` controls any number of hosts. Use one row per host:
 
 ```text
-utilities/tls/
-  tls.env.example
-  hosts.csv.example
-  01_generate_keys_csrs.sh
-  02_create_demo_ca.sh
-  03_sign_csrs_with_demo_ca.sh
-  04_build_pkcs12_stores.sh
-  05_optional_convert_to_bcfks.sh
-  06_validate_artifacts.sh
+hostname,cn,san_dns,san_ip
 ```
 
-## Setup
+`san_dns` and `san_ip` can contain pipe-separated values.
 
-Copy the examples:
+## Two supported modes
+
+### Mode A: Generate keys and CSRs here
+
+Set:
 
 ```bash
-cd /root/cfm_fips_install/utilities/tls
-cp tls.env.example tls.env
-cp hosts.csv.example hosts.csv
-vi tls.env
-vi hosts.csv
+export GENERATE_KEYS_AND_CSRS='true'
 ```
 
-The `hosts.csv` format is:
-
-```text
-host_id,common_name,san_dns,san_ip
-```
-
-Use semicolons for multiple SANs:
-
-```text
-nifi-agent-1,ip-10-0-11-156.us-east-2.compute.internal,ip-10-0-11-156.us-east-2.compute.internal;localhost,10.0.11.156;127.0.0.1
-```
-
-## Enterprise CA flow
-
-Use this flow when a real internal CA will sign your certificates.
+Run:
 
 ```bash
-./01_generate_keys_csrs.sh
+sudo -E ./00_prepare_dirs.sh
+sudo -E ./01_generate_keys_csrs.sh
 ```
 
-Send the generated CSRs to your certificate team:
+Send the CSRs from:
 
 ```text
-$TLS_OUTPUT_DIR/csr/<host_id>.csr
+/tmp/auto-tls/csrs/
 ```
 
-When the CA returns signed certificates, place them here:
+Ask the CA to preserve SAN values and include both Extended Key Usage values:
 
 ```text
-$TLS_OUTPUT_DIR/signed/<host_id>.crt
+TLS Web Server Authentication
+TLS Web Client Authentication
 ```
 
-Put the CA chain here:
+When the CA returns certs, place each cert here:
 
 ```text
-$TLS_CA_CHAIN_FILE
+/tmp/auto-tls/certs/<hostname>.pem
 ```
 
-Default:
+Place the CA chain here:
 
 ```text
-/root/cfm_tls_artifacts/ca/ca-chain.pem
+/tmp/auto-tls/ca-certs/ca-chain.pem
 ```
 
-Then build stores:
+### Mode B: Customer provides keys and certs
+
+Set:
 
 ```bash
-./04_build_pkcs12_stores.sh
-./06_validate_artifacts.sh
+export GENERATE_KEYS_AND_CSRS='false'
 ```
 
-## Demo CA flow
-
-Use this only for lab testing.
-
-```bash
-./01_generate_keys_csrs.sh
-./02_create_demo_ca.sh
-./03_sign_csrs_with_demo_ca.sh
-./04_build_pkcs12_stores.sh
-./06_validate_artifacts.sh
-```
-
-## Output per host
-
-For each `host_id`, the utility creates:
+Skip `01_generate_keys_csrs.sh`. Place files directly:
 
 ```text
-/root/cfm_tls_artifacts/private/<host_id>.key
-/root/cfm_tls_artifacts/csr/<host_id>.csr
-/root/cfm_tls_artifacts/signed/<host_id>.crt
-/root/cfm_tls_artifacts/certs/<host_id>-fullchain.pem
-/root/cfm_tls_artifacts/stores/<host_id>-keystore.p12
-/root/cfm_tls_artifacts/stores/<host_id>-truststore.p12
-/root/cfm_tls_artifacts/stores/<host_id>-passwords.txt
+/tmp/auto-tls/keys/<hostname>-key.pem
+/tmp/auto-tls/certs/<hostname>.pem
+/tmp/auto-tls/ca-certs/ca-chain.pem
 ```
 
-## CM values for NiFi
+The hostnames must match the first column in `hosts.csv`.
 
-For a NiFi node, use the host-specific files:
+## Validate certs
 
-```properties
-nifi.security.keystore=/root/cfm_tls_artifacts/stores/<host_id>-keystore.p12
-nifi.security.keystoreType=PKCS12
-nifi.security.keystorePasswd=<TLS_KEYSTORE_PASSWORD>
-nifi.security.keyPasswd=<TLS_KEYSTORE_PASSWORD>
-nifi.security.truststore=/root/cfm_tls_artifacts/stores/<host_id>-truststore.p12
-nifi.security.truststoreType=PKCS12
-nifi.security.truststorePasswd=<TLS_TRUSTSTORE_PASSWORD>
-nifi.security.needClientAuth=true
-```
-
-In Cloudera Manager, set these through the NiFi TLS/SSL fields if exposed, or through the NiFi `nifi.properties` safety valve if needed.
-
-## CM values for NiFi Registry
-
-For NiFi Registry, use the host-specific files:
-
-```properties
-nifi.registry.security.keystore=/root/cfm_tls_artifacts/stores/<host_id>-keystore.p12
-nifi.registry.security.keystoreType=PKCS12
-nifi.registry.security.keystorePasswd=<TLS_KEYSTORE_PASSWORD>
-nifi.registry.security.keyPasswd=<TLS_KEYSTORE_PASSWORD>
-nifi.registry.security.truststore=/root/cfm_tls_artifacts/stores/<host_id>-truststore.p12
-nifi.registry.security.truststoreType=PKCS12
-nifi.registry.security.truststorePasswd=<TLS_TRUSTSTORE_PASSWORD>
-nifi.registry.security.needClientAuth=true
-```
-
-## Optional BCFKS
-
-PKCS12 is the default because it is supported by NiFi/NiFi Registry and is easier to generate with standard tools. If you want to attempt BCFKS conversion, set this in `tls.env`:
+Run:
 
 ```bash
-export TLS_CREATE_BCFKS=true
+sudo -E ./02_validate_signed_certs.sh
 ```
 
-Then run:
+This checks:
+
+- host key exists
+- host cert exists
+- CA chain exists
+- cert includes serverAuth and clientAuth EKUs
+- cert/key pair match
+- hostname is present in DNS SAN, with warning if not found
+
+## Build the generateCmca payload
+
+Run:
 
 ```bash
-./05_optional_convert_to_bcfks.sh
+sudo -E ./03_build_generate_cmca_payload.sh
+cat /tmp/auto-tls/payload/generateCmca.json
 ```
 
-This requires Java/keytool to support `BCFKS` with the configured SafeLogic provider modules. If conversion fails, continue with PKCS12 unless your security team specifically requires BCFKS.
+The JSON includes:
+
+- `location`
+- `customCA=true`
+- `interpretAsFilenames=true`
+- `cmHostCert`
+- `cmHostKey`
+- `caCert`
+- `keystorePasswd`
+- `truststorePasswd`
+- `hostCerts` for every host in `hosts.csv`
+- `configureAllServices`
+- SSH settings
+
+## Run the API
+
+Run:
+
+```bash
+sudo -E ./04_run_generate_cmca.sh
+```
+
+Or print the curl command:
+
+```bash
+./05_print_generate_cmca_curl.sh
+```
+
+The API endpoint is built from variables:
+
+```text
+${CM_API_SCHEME}://${CM_HOST_FQDN}:${CM_API_PORT}/api/${CM_API_VERSION}/cm/commands/generateCmca
+```
+
+For a fresh non-TLS CM install this is usually:
+
+```text
+http://<CM_FQDN>:7180/api/v41/cm/commands/generateCmca
+```
+
+For an existing TLS-enabled CM, use HTTPS and the TLS port.
+
+## After the API succeeds
+
+Restart CM Server and agents:
+
+```bash
+sudo -E ./06_post_autotls_restart.sh
+```
+
+Then restart agents on every other host:
+
+```bash
+systemctl restart cloudera-scm-supervisord cloudera-scm-agent
+```
+
+After Auto-TLS is active, CM UI/API should move to the TLS port.
 
 ## Notes
 
-* Do not use JKS for a FIPS-oriented NiFi deployment.
-* Keep private keys under `TLS_OUTPUT_DIR/private` protected. The scripts use `chmod 600`.
-* Use the same CA chain in all truststores so NiFi nodes, NiFi Registry, and clients trust each other.
-* Make sure each certificate has SAN entries for the exact hostnames used by browsers, Cloudera Manager, and service-to-service calls.
+- Passwords must be more than 12 characters and should not contain special characters for this Cloudera flow.
+- Every host in the cluster needs a cert/key entry in `hostCerts`, including the CM host.
+- The CM host must also appear in `hosts.csv`.
+- The CA chain must be consistent with the host certs. If intermediate CA chains vary, include the entire chain in each host certificate file.
+- The SSH user must have NOPASSWD sudo across the cluster because CM cannot answer a sudo password prompt.

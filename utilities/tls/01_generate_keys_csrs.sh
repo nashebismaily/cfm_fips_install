@@ -1,51 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib.sh
-source "$SCRIPT_DIR/lib.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+require_root
+require_cmd openssl
+require_cmd python3
 
-need_cmd openssl
-init_dirs
+if ! is_true "${GENERATE_KEYS_AND_CSRS:-true}"; then
+  echo "[SKIP] GENERATE_KEYS_AND_CSRS=false. Customer-provided keys/certs mode."
+  echo "Place keys at:  ${AUTO_TLS_KEYS_DIR}/<hostname>${HOST_KEY_SUFFIX}"
+  echo "Place certs at: ${AUTO_TLS_CERTS_DIR}/<hostname>${HOST_CERT_SUFFIX}"
+  echo "Place CA chain: ${AUTO_TLS_CA_CHAIN_FILE}"
+  exit 0
+fi
 
-echo "==== Generating private keys and CSRs ===="
-echo "Output: $TLS_OUTPUT_DIR"
-echo
+mkdir -p "$AUTO_TLS_KEYS_DIR" "$AUTO_TLS_CSRS_DIR"
 
-read_hosts | while IFS='|' read -r host_id cn san_dns san_ip; do
-  safe_id="$(sanitize_name "$host_id")"
-  key_file="$TLS_OUTPUT_DIR/private/${safe_id}.key"
-  csr_file="$TLS_OUTPUT_DIR/csr/${safe_id}.csr"
-  cfg_file="$TLS_OUTPUT_DIR/configs/${safe_id}-openssl.cnf"
+while IFS=$'\t' read -r hostname cn san_dns san_ip; do
+  [[ -z "$hostname" ]] && continue
+  key="$(host_key_file "$hostname")"
+  csr="$(host_csr_file "$hostname")"
+  cfg="${AUTO_TLS_CSRS_DIR}/${hostname}-openssl.cnf"
 
-  echo "---- $host_id"
-  echo "CN: $cn"
-  echo "DNS SANs: ${san_dns:-$cn}"
-  echo "IP SANs: ${san_ip:-none}"
-
-  openssl_req_config "$host_id" "$cn" "$san_dns" "$san_ip" "$cfg_file"
-
-  if [[ ! -f "$key_file" ]]; then
-    openssl genpkey \
-      -algorithm "${TLS_KEY_ALGORITHM:-RSA}" \
-      -pkeyopt rsa_keygen_bits:"${TLS_RSA_BITS:-3072}" \
-      -out "$key_file"
-    chmod 600 "$key_file"
-  else
-    echo "[INFO] Existing key kept: $key_file"
+  if [[ -e "$key" || -e "$csr" ]] && ! is_true "${OVERWRITE_KEYS_AND_CSRS:-false}"; then
+    echo "[SKIP] Existing key/CSR for $hostname. Set OVERWRITE_KEYS_AND_CSRS=true to replace."
+    continue
   fi
 
-  openssl req -new \
-    -key "$key_file" \
-    -out "$csr_file" \
-    -config "$cfg_file" \
-    -"${TLS_DIGEST:-sha256}"
+  make_san_config "$hostname" "$cn" "$san_dns" "$san_ip" "$cfg"
+  subj="/CN=${cn}/O=${TLS_SUBJECT_O}/OU=${TLS_SUBJECT_OU}/L=${TLS_SUBJECT_L}/ST=${TLS_SUBJECT_ST}/C=${TLS_SUBJECT_C}"
 
-  echo "[OK] Key: $key_file"
-  echo "[OK] CSR: $csr_file"
-  echo "[OK] OpenSSL config: $cfg_file"
-  echo
- done
+  echo "[INFO] Generating key and CSR for $hostname"
+  openssl req -newkey "${TLS_KEY_ALGORITHM}:${TLS_RSA_BITS}" "-${TLS_SIGNATURE_DIGEST}" \
+    -keyout "$key" \
+    -out "$csr" \
+    -passout "file:${AUTO_TLS_KEY_PASSWORD_FILE}" \
+    -subj "$subj" \
+    -config "$cfg"
 
-echo "[DONE] Send the CSR files in $TLS_OUTPUT_DIR/csr to your certificate authority."
-echo "After receiving certificates, save each host cert as: $TLS_OUTPUT_DIR/signed/<host_id>.crt"
-echo "Save the issuing CA chain as: $TLS_CA_CHAIN_FILE"
+  chmod 600 "$key"
+  chmod 644 "$csr" "$cfg"
+done < <(read_hosts_python)
+
+chown -R cloudera-scm:cloudera-scm "$AUTO_TLS_WORKDIR" 2>/dev/null || true
+echo "[OK] Generated keys and CSRs under $AUTO_TLS_WORKDIR"
