@@ -32,9 +32,30 @@ fi
 # Avoid old cert/proc state when reusing hosts.
 rm -rf /var/lib/cloudera-scm-agent/cm_guid /var/lib/cloudera-scm-agent/uuid || true
 
+echo "==== Starting Cloudera Manager agent services ===="
+# The CM Server host must also run the local CM agent and supervisord so it appears as a managed host.
+# Remote worker/agent hosts need both services as well. Starting only cloudera-scm-agent is not enough.
+systemctl daemon-reload
+systemctl enable cloudera-scm-supervisord
 systemctl enable cloudera-scm-agent
+systemctl reset-failed cloudera-scm-supervisord cloudera-scm-agent || true
+systemctl restart cloudera-scm-supervisord
 systemctl restart cloudera-scm-agent
 sleep 5
-systemctl status cloudera-scm-agent --no-pager || true
 
-echo "[OK] CM agent points to ${MANAGER_ARG}"
+systemctl status cloudera-scm-supervisord --no-pager
+systemctl status cloudera-scm-agent --no-pager
+
+if ! systemctl is-active --quiet cloudera-scm-supervisord; then
+  echo "[ERROR] cloudera-scm-supervisord is not active."
+  journalctl -u cloudera-scm-supervisord -n 80 --no-pager || true
+  exit 1
+fi
+
+if ! systemctl is-active --quiet cloudera-scm-agent; then
+  echo "[ERROR] cloudera-scm-agent is not active."
+  journalctl -u cloudera-scm-agent -n 80 --no-pager || true
+  exit 1
+fi
+
+echo "[OK] CM agent services are running and point to ${MANAGER_ARG}"

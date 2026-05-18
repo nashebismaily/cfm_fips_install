@@ -282,21 +282,33 @@ sudo -E ./RUN_MANAGER
 It installs/configures:
 
 - common OS packages
+- Python 3.8 for the CM agent wrapper
 - Java 11
+- SafeLogic Java FIPS provider configuration
 - PostgreSQL 14
 - Cloudera Manager repo
 - Cloudera Manager Server
-- local Cloudera Manager Agent
+- the local Cloudera Manager Agent on the manager/server host
+- the local `cloudera-scm-supervisord` service on the manager/server host
 - CM database preparation
 - CFM CSDs
 - readiness validation
 
-After it completes, check:
+Important: the Cloudera Manager server host must also run the CM agent and supervisord. Otherwise it may not appear as a managed host in CM. The updated scripts start and validate both local services:
+
+```bash
+systemctl status cloudera-scm-supervisord
+systemctl status cloudera-scm-agent
+```
+
+After `RUN_MANAGER` completes, check:
 
 ```bash
 systemctl status cloudera-scm-server
+systemctl status cloudera-scm-supervisord
 systemctl status cloudera-scm-agent
 tail -n 80 /var/log/cloudera-scm-server/cloudera-scm-server.log
+tail -n 80 /var/log/cloudera-scm-agent/cloudera-scm-agent.log
 ```
 
 Then open Cloudera Manager:
@@ -355,14 +367,15 @@ Then run the agent installer:
 sudo -E ./RUN_AGENT
 ```
 
-Check the agent:
+Check the agent services:
 
 ```bash
+systemctl status cloudera-scm-supervisord
 systemctl status cloudera-scm-agent
 tail -n 80 /var/log/cloudera-scm-agent/cloudera-scm-agent.log
 ```
 
-The agent should connect back to the manager host.
+Both `cloudera-scm-supervisord` and `cloudera-scm-agent` should be active. The agent should connect back to the manager host.
 
 For additional agents, leave the shared values the same and change only:
 
@@ -436,12 +449,46 @@ If a future customer uses external PostgreSQL, the scripts should be adjusted to
 After manager and agent are installed:
 
 1. Log into Cloudera Manager.
-2. Confirm both hosts appear.
-3. Deploy the CDP Runtime cluster.
-4. ZooKeeper comes from CDP Base/Runtime. Do not manually install ZooKeeper outside CM.
-5. Add/use the CFM 2.1.7.3000 parcel repo.
-6. Download, distribute, and activate the CFM parcel.
-7. Deploy NiFi and NiFi Registry from Cloudera Manager.
+2. Confirm the manager/server host appears as a managed host.
+3. Confirm each remote agent host appears as a managed host.
+4. Deploy the CDP Runtime cluster.
+5. ZooKeeper comes from CDP Base/Runtime. Do not manually install ZooKeeper outside CM.
+6. Add the CFM parcel repository from `EXPORTS`:
+
+```bash
+echo "$CFM_PARCEL_REPO_URL"
+```
+
+For the default CFM 2.1.7.3000 profile, this is:
+
+```text
+https://archive.cloudera.com/p/cfm2/2.1.7.3000/redhat8/yum/tars/parcel/
+```
+
+7. In CM, go to `Hosts -> Parcels -> Configuration` and add that repository URL.
+8. Go back to `Hosts -> Parcels`, click `Check for New Parcels`, and look for:
+
+```text
+CFM-2.1.7.3000-45
+```
+
+9. Download, distribute, and activate the CFM parcel.
+10. Deploy NiFi and NiFi Registry from Cloudera Manager.
+
+Important: the CFM CSD jars and the CFM parcel repository must come from the same CFM build. For the default profile, the CSDs are:
+
+```text
+NIFI-1.28.1.2.1.7.3000-45.jar
+NIFIREGISTRY-1.28.1.2.1.7.3000-45.jar
+```
+
+and the parcel repo is:
+
+```text
+https://archive.cloudera.com/p/cfm2/2.1.7.3000/redhat8/yum/tars/parcel/
+```
+
+Do not mix 2.1.7.3000 CSDs with older 2.1.7.1001 parcel artifacts, or the reverse.
 
 ---
 
@@ -584,7 +631,7 @@ When only the generic RHEL 8 `python3` was installed, the host had Python 3.6.8 
 exec: /usr/local/bin/: cannot execute: Is a directory
 ```
 
-The scripts now install and validate Python 3.8 on both the manager and agent hosts. The relevant configurable values are in `EXPORTS`:
+The scripts now install and validate Python 3.8 on both the manager and agent hosts, because the manager host also runs a local CM agent. The relevant configurable values are in `EXPORTS`:
 
 ```bash
 export CM_AGENT_PYTHON_BIN='/usr/bin/python3.8'
@@ -746,3 +793,25 @@ Expected output includes:
 Provider: CCJ
 Provider: BCJSSE
 ```
+
+
+## Update: Manager host also runs agent + supervisord
+
+The Cloudera Manager server host must also be a managed host. That means the manager/server host needs both of these services running locally:
+
+```bash
+cloudera-scm-supervisord
+cloudera-scm-agent
+```
+
+The updated `10_configure_cm_agent.sh` and `12_start_cm_services.sh` explicitly enable, restart, and validate both services. This applies to the manager/server host and to remote agent hosts.
+
+Quick validation on any host:
+
+```bash
+systemctl status cloudera-scm-supervisord -l --no-pager
+systemctl status cloudera-scm-agent -l --no-pager
+/opt/cloudera/cm-agent/bin/python --version
+```
+
+Expected Python wrapper output is Python 3.8.x.

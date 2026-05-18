@@ -26,11 +26,10 @@ if ! grep -Eq '^[[:space:]]*export[[:space:]]+CMF_FF_PREVENT_HOST_HEADER_INJECTI
   echo 'export CMF_FF_PREVENT_HOST_HEADER_INJECTION="false"' >> "$CM_DEFAULTS_FILE"
 fi
 
+echo "==== Starting Cloudera Manager Server ===="
 systemctl daemon-reload
 systemctl enable cloudera-scm-server
-systemctl enable cloudera-scm-agent
 systemctl restart cloudera-scm-server
-systemctl restart cloudera-scm-agent || true
 
 echo "==== Waiting for CM on 7180 ===="
 READY=false
@@ -48,9 +47,39 @@ if [[ "$READY" != "true" ]]; then
   exit 1
 fi
 
-systemctl status cloudera-scm-server --no-pager || true
-systemctl status cloudera-scm-agent --no-pager || true
+echo "==== Starting local Cloudera Manager agent services on CM Server host ===="
+# The CM Server host must also be managed by CM, so the local agent and supervisord must run here too.
+systemctl enable cloudera-scm-supervisord
+systemctl enable cloudera-scm-agent
+systemctl reset-failed cloudera-scm-supervisord cloudera-scm-agent || true
+systemctl restart cloudera-scm-supervisord
+systemctl restart cloudera-scm-agent
+sleep 5
+
+systemctl status cloudera-scm-server --no-pager
+systemctl status cloudera-scm-supervisord --no-pager
+systemctl status cloudera-scm-agent --no-pager
+
+if ! systemctl is-active --quiet cloudera-scm-server; then
+  echo "[ERROR] cloudera-scm-server is not active."
+  journalctl -u cloudera-scm-server -n 120 --no-pager || true
+  exit 1
+fi
+
+if ! systemctl is-active --quiet cloudera-scm-supervisord; then
+  echo "[ERROR] local cloudera-scm-supervisord is not active on the CM Server host."
+  journalctl -u cloudera-scm-supervisord -n 80 --no-pager || true
+  exit 1
+fi
+
+if ! systemctl is-active --quiet cloudera-scm-agent; then
+  echo "[ERROR] local cloudera-scm-agent is not active on the CM Server host."
+  journalctl -u cloudera-scm-agent -n 80 --no-pager || true
+  exit 1
+fi
+
 curl -I http://localhost:7180 || true
 PRIVATE_IP="$(hostname -I | awk '{print $1}')"
 echo "[OK] CM is up: http://${PRIVATE_IP}:7180"
+echo "[OK] Local CM agent and supervisord are running on the CM Server host."
 echo "Default login: admin / admin"
