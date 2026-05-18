@@ -75,6 +75,15 @@ export RANGER_DB_NAME='ranger'
 export RANGER_DB_USER='rangeradmin'
 export RANGER_DB_PASS='Ranger_DB_2026'
 
+
+# ---- Hue / PostgreSQL FIPS psycopg2 readiness ----
+# Host Inspector flags PostgreSQL-backed Hue unless psycopg2 >= 2.9.5 is available.
+# On FIPS hosts, do not use psycopg2-binary because it bundles its own libssl.
+# This installs psycopg2 from source using PGDG pg_config.
+export INSTALL_HUE_FIPS_PSYCOPG2='true'
+export HUE_PSYCOPG2_VERSION='2.9.9'
+export HUE_PSYCOPG2_PYTHON_BIN='/usr/bin/python3.8'
+
 # ---- External repo behavior ----
 export ALLOW_EXTERNAL='true'
 export ENABLE_PGDG='true'

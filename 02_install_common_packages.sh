@@ -30,6 +30,7 @@ echo
 echo "System Python: $(python3 --version 2>/dev/null || echo missing)"
 echo "CM Agent Python: $(/usr/bin/python3.8 --version 2>/dev/null || echo missing)"
 install_required_agent_python
+install_hue_fips_psycopg2
 which nc || true
 which jq || true
 

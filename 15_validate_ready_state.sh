@@ -16,6 +16,10 @@ fi
 validate_cm_agent_python_wrapper || true
 
 echo
+echo "==== Hue / psycopg2 FIPS readiness ===="
+validate_hue_fips_psycopg2 || true
+
+echo
 echo "==== Java ===="
 validate_java_11 || true
 if [[ "${CONFIGURE_JAVA_FIPS:-true}" == "true" ]]; then

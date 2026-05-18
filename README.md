@@ -815,3 +815,45 @@ systemctl status cloudera-scm-agent -l --no-pager
 ```
 
 Expected Python wrapper output is Python 3.8.x.
+---
+
+## Hue / PostgreSQL FIPS psycopg2 readiness
+
+Cloudera Manager Host Inspector may warn that PostgreSQL-backed Hue requires `psycopg2` version `2.9.5` or higher. On FIPS hosts, do **not** install `psycopg2-binary`, because the binary wheel bundles its own OpenSSL libraries. This kit installs `psycopg2` from source using the PGDG `pg_config` path.
+
+The default settings in `EXPORTS` are:
+
+```bash
+export INSTALL_HUE_FIPS_PSYCOPG2='true'
+export HUE_PSYCOPG2_VERSION='2.9.9'
+export HUE_PSYCOPG2_PYTHON_BIN='/usr/bin/python3.8'
+```
+
+The scripts install the required build prerequisites, including:
+
+```bash
+perl-IPC-Run gcc python38-devel postgresql${PG_MAJOR}-devel openssl-devel libffi-devel
+```
+
+Because PGDG places `pg_config` under `/usr/pgsql-${PG_MAJOR}/bin`, the script exports:
+
+```bash
+export PATH="/usr/pgsql-${PG_MAJOR}/bin:$PATH"
+export PG_CONFIG="/usr/pgsql-${PG_MAJOR}/bin/pg_config"
+```
+
+The validation checks both Python paths used by Host Inspector style checks:
+
+```bash
+/usr/bin/python3.8 -c 'import psycopg2; print(psycopg2.__version__)'
+/opt/cloudera/cm-agent/bin/python -c 'import psycopg2; print(psycopg2.__version__)'
+```
+
+Expected result:
+
+```text
+2.9.9
+```
+
+Run `15_validate_ready_state.sh` after installation to confirm psycopg2 visibility.
+

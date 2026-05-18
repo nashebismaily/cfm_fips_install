@@ -271,6 +271,130 @@ validate_cm_agent_python_wrapper() {
   echo "[OK] CM agent Python wrapper is usable."
 }
 
+install_hue_fips_psycopg2() {
+  if [[ "${INSTALL_HUE_FIPS_PSYCOPG2:-true}" != "true" ]]; then
+    echo "[INFO] INSTALL_HUE_FIPS_PSYCOPG2=false; skipping psycopg2 source install."
+    return 0
+  fi
+
+  local pybin pg_config version pg_devel_pkg import_out wrapper_out
+  pybin="${HUE_PSYCOPG2_PYTHON_BIN:-$(required_agent_python_bin)}"
+  version="${HUE_PSYCOPG2_VERSION:-2.9.9}"
+  pg_config="$(pg_bin_dir)/pg_config"
+  pg_devel_pkg="postgresql${PG_MAJOR:-14}-devel"
+
+  echo "==== Installing FIPS-safe psycopg2 for Hue/PostgreSQL readiness ===="
+  echo "Python: ${pybin}"
+  echo "psycopg2 target version: ${version}"
+  echo "pg_config: ${pg_config}"
+
+  if [[ ! -x "$pybin" ]]; then
+    echo "[ERROR] Python binary for psycopg2 is missing: $pybin"
+    exit 1
+  fi
+
+  # pg_config is provided by the PGDG postgresqlXX-devel package.
+  # perl-IPC-Run is in CodeReady Builder on RHEL 8 RHUI and is a dependency of PGDG devel packages.
+  dnf install -y perl-IPC-Run gcc python38-devel "${pg_devel_pkg}" openssl-devel libffi-devel
+
+  if [[ ! -x "$pg_config" ]]; then
+    echo "[ERROR] pg_config not found or not executable: $pg_config"
+    echo "Available pg_config files:"
+    find /usr -name pg_config 2>/dev/null || true
+    exit 1
+  fi
+
+  export PATH="$(pg_bin_dir):$PATH"
+  export PG_CONFIG="$pg_config"
+
+  "$pybin" -m pip uninstall -y psycopg2 psycopg2-binary || true
+
+  # Keep pip below 25 to avoid future Python 3.8 compatibility surprises.
+  "$pybin" -m pip install --upgrade 'pip<25' setuptools wheel
+  "$pybin" -m pip install --no-binary=:all: "psycopg2==${version}"
+
+  import_out="$($pybin - <<'PY'
+import psycopg2
+print(psycopg2.__version__)
+PY
+)"
+  echo "psycopg2 via ${pybin}: ${import_out}"
+
+  if [[ "$import_out" != ${version}* ]]; then
+    echo "[ERROR] Expected psycopg2 ${version}, got: ${import_out}"
+    exit 1
+  fi
+
+  if [[ -x /opt/cloudera/cm-agent/bin/python ]]; then
+    wrapper_out="$(/opt/cloudera/cm-agent/bin/python - <<'PY'
+import psycopg2
+print(psycopg2.__version__)
+PY
+)"
+    echo "psycopg2 via CM agent Python wrapper: ${wrapper_out}"
+    if [[ "$wrapper_out" != ${version}* ]]; then
+      echo "[ERROR] CM agent Python wrapper cannot see expected psycopg2 ${version}."
+      exit 1
+    fi
+  else
+    echo "[INFO] CM agent Python wrapper not installed yet; skipping wrapper psycopg2 validation."
+  fi
+
+  echo "[OK] FIPS-safe psycopg2 ${version} installed from source."
+}
+
+validate_hue_fips_psycopg2() {
+  if [[ "${INSTALL_HUE_FIPS_PSYCOPG2:-true}" != "true" ]]; then
+    echo "[INFO] INSTALL_HUE_FIPS_PSYCOPG2=false; skipping psycopg2 validation."
+    return 0
+  fi
+
+  local pybin version rc out wrapper_rc wrapper_out
+  pybin="${HUE_PSYCOPG2_PYTHON_BIN:-$(required_agent_python_bin)}"
+  version="${HUE_PSYCOPG2_VERSION:-2.9.9}"
+
+  if [[ ! -x "$pybin" ]]; then
+    echo "[WARN] psycopg2 validation skipped; Python missing: $pybin"
+    return 0
+  fi
+
+  set +e
+  out="$($pybin - <<'PY'
+try:
+    import psycopg2
+    print(psycopg2.__version__)
+except Exception as e:
+    print("ERROR:", repr(e))
+    raise
+PY
+ 2>&1)"
+  rc=$?
+  set -e
+  echo "psycopg2 via ${pybin}: ${out}"
+  if [[ $rc -ne 0 || "$out" != ${version}* ]]; then
+    echo "[WARN] Expected source-built psycopg2 ${version} via ${pybin}."
+  fi
+
+  if [[ -x /opt/cloudera/cm-agent/bin/python ]]; then
+    set +e
+    wrapper_out="$(/opt/cloudera/cm-agent/bin/python - <<'PY'
+try:
+    import psycopg2
+    print(psycopg2.__version__)
+except Exception as e:
+    print("ERROR:", repr(e))
+    raise
+PY
+ 2>&1)"
+    wrapper_rc=$?
+    set -e
+    echo "psycopg2 via CM agent Python wrapper: ${wrapper_out}"
+    if [[ $wrapper_rc -ne 0 || "$wrapper_out" != ${version}* ]]; then
+      echo "[WARN] CM agent Python wrapper does not see expected psycopg2 ${version}. Host Inspector may flag Hue/PostgreSQL readiness."
+    fi
+  fi
+}
+
 ensure_line() {
   local file="$1"
   local line="$2"
