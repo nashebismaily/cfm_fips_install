@@ -130,26 +130,92 @@ java_home_target() {
 }
 
 ensure_java_default() {
-  local java_home java_bin resolved_java
-  java_home="$(java_home_target)"
-  java_bin="${java_home}/bin/java"
+  local desired_major java_bin java_home javac_bin
+  desired_major="${JAVA_MAJOR:-11}"
 
-  if [[ ! -x "$java_bin" ]]; then
-    resolved_java="$(readlink -f "$(command -v java 2>/dev/null || true)" 2>/dev/null || true)"
-    if [[ -n "$resolved_java" && "$resolved_java" == *java-11* ]]; then
-      java_bin="$resolved_java"
-      java_home="$(dirname "$(dirname "$resolved_java")")"
-    else
-      echo "[WARN] Could not find Java 11 at ${java_bin}; validate_java_11 will perform final validation."
-      return 0
+  if [[ "${JAVA_INSTALL_MODE:-system}" == "custom" ]]; then
+    java_home="$(java_home_target)"
+    java_bin="${java_home}/bin/java"
+
+    if [[ ! -x "$java_bin" ]]; then
+      echo "[ERROR] JAVA_INSTALL_MODE=custom but Java binary is missing or not executable: $java_bin"
+      exit 1
     fi
-  fi
 
-  export JAVA_HOME="$java_home"
-  export PATH="$JAVA_HOME/bin:$PATH"
+    export JAVA_HOME="$java_home"
+    export PATH="$JAVA_HOME/bin:$PATH"
+  else
+    java_bin=""
 
-  if command -v alternatives >/dev/null 2>&1; then
-    alternatives --set java "$java_bin" >/dev/null 2>&1 || true
+    # First preference: use the Java path that is actually registered with alternatives.
+    # Do not use /usr/lib/jvm/java-11-openjdk/bin/java unless it is registered,
+    # because alternatives --set rejects unregistered symlinks on RHEL.
+    if command -v alternatives >/dev/null 2>&1; then
+      java_bin="$(
+        alternatives --display java 2>/dev/null \
+          | awk -v major="$desired_major" '
+              $1 ~ "^/usr/lib/jvm/java-" major "-openjdk" && $1 ~ "/bin/java$" { print $1; exit }
+            '
+      )"
+    fi
+
+    # Fallback: find a versioned OpenJDK Java binary.
+    # Example:
+    # /usr/lib/jvm/java-11-openjdk-11.0.25.0.9-2.el8.x86_64/bin/java
+    if [[ -z "${java_bin:-}" || ! -x "$java_bin" ]]; then
+      java_bin="$(
+        find /usr/lib/jvm -path '*/bin/java' \( -type f -o -type l \) -print 2>/dev/null \
+          | grep -E "/java-${desired_major}-openjdk[^/]*/bin/java$" \
+          | grep -v "/jre/bin/java$" \
+          | sort \
+          | head -n 1
+      )"
+    fi
+
+    # Final fallback: JRE-style path, only if no JDK-style path exists.
+    if [[ -z "${java_bin:-}" || ! -x "$java_bin" ]]; then
+      java_bin="$(
+        find /usr/lib/jvm -path '*/bin/java' \( -type f -o -type l \) -print 2>/dev/null \
+          | grep -E "/(java|jre)-${desired_major}-openjdk[^/]*/(jre/)?bin/java$" \
+          | sort \
+          | head -n 1
+      )"
+    fi
+
+    if [[ -z "${java_bin:-}" || ! -x "$java_bin" ]]; then
+      echo "[ERROR] Could not find Java ${desired_major} under /usr/lib/jvm."
+      echo "[INFO] Available Java binaries:"
+      find /usr/lib/jvm -path '*/bin/java' \( -type f -o -type l \) -print 2>/dev/null || true
+      echo "[INFO] alternatives --display java:"
+      alternatives --display java 2>/dev/null || true
+      exit 1
+    fi
+
+    java_home="$(dirname "$(dirname "$java_bin")")"
+
+    export JAVA_HOME="$java_home"
+    export PATH="$JAVA_HOME/bin:$PATH"
+
+    if command -v alternatives >/dev/null 2>&1; then
+      echo "[INFO] Setting java alternative to: $java_bin"
+
+      # Try normal --set first. If the path was found on disk but is not registered,
+      # install it into alternatives and then set it. This avoids hardcoding the
+      # versioned Java path and handles RHEL images where the stable symlink is not registered.
+      if ! alternatives --set java "$java_bin"; then
+        echo "[WARN] Java path was not registered with alternatives. Registering it now."
+        alternatives --install /usr/bin/java java "$java_bin" 200000
+        alternatives --set java "$java_bin"
+      fi
+
+      javac_bin="${JAVA_HOME}/bin/javac"
+      if [[ -x "$javac_bin" ]]; then
+        if ! alternatives --set javac "$javac_bin" >/dev/null 2>&1; then
+          alternatives --install /usr/bin/javac javac "$javac_bin" 200000 >/dev/null 2>&1 || true
+          alternatives --set javac "$javac_bin" >/dev/null 2>&1 || true
+        fi
+      fi
+    fi
   fi
 
   cat >/etc/profile.d/cloudera-java.sh <<EOFJAVA
@@ -160,10 +226,16 @@ EOFJAVA
   cat >/etc/default/cloudera-java <<EOFJAVADEFAULT
 export JAVA_HOME='${JAVA_HOME}'
 EOFJAVADEFAULT
+
+  echo "[OK] JAVA_HOME=${JAVA_HOME}"
+  echo "[OK] Active java=$(readlink -f "$(command -v java)")"
 }
 
+
 validate_java_11() {
-  local java_bin version_output version_line detected
+  local java_bin version_output version_line detected desired_major
+  desired_major="${JAVA_MAJOR:-11}"
+
   if [[ -n "${CUSTOM_JAVA_HOME:-}" ]]; then
     java_bin="${CUSTOM_JAVA_HOME}/bin/java"
   elif [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
@@ -173,13 +245,12 @@ validate_java_11() {
   fi
 
   if [[ -z "$java_bin" || ! -x "$java_bin" ]]; then
-    echo "[ERROR] Java executable not found. Install Java 11 or set CUSTOM_JAVA_HOME."
+    echo "[ERROR] Java executable not found. Install Java ${desired_major} or set CUSTOM_JAVA_HOME."
     exit 1
   fi
 
-  # java -version can print an informational JDK_JAVA_OPTIONS line before the
-  # actual version after /etc/profile.d/ccj.sh is installed. Parse the real
-  # version line instead of blindly taking the first line.
+  # java -version can print a JDK_JAVA_OPTIONS line before the real version.
+  # Parse the real version line instead of blindly taking the first line.
   version_output="$($java_bin -version 2>&1 || true)"
   version_line="$(printf '%s\n' "$version_output" | grep -E '^(openjdk|java) version ' | head -1)"
 
@@ -188,23 +259,31 @@ validate_java_11() {
 
   if [[ -z "$version_line" ]]; then
     echo "$version_output"
-    echo "[ERROR] Java ${JAVA_MAJOR:-11} required, detected: unknown"
+    echo "[ERROR] Java ${desired_major} required, detected: unknown"
     exit 1
   fi
 
-  if [[ "$version_line" =~ version\ \"([0-9]+)\. ]] || [[ "$version_line" =~ openjdk\ ([0-9]+)\. ]]; then
+  # Java 8 reports as version "1.8.0_xxx". Java 11+ reports as "11.0.x".
+  if [[ "$version_line" =~ version\ \"1\.([0-9]+)\. ]]; then
+    detected="${BASH_REMATCH[1]}"
+  elif [[ "$version_line" =~ version\ \"([0-9]+)\. ]]; then
+    detected="${BASH_REMATCH[1]}"
+  elif [[ "$version_line" =~ openjdk\ ([0-9]+)\. ]]; then
     detected="${BASH_REMATCH[1]}"
   else
     detected="unknown"
   fi
 
-  if [[ "$detected" != "${JAVA_MAJOR:-11}" ]]; then
+  if [[ "$detected" != "$desired_major" ]]; then
     echo "$version_output"
-    echo "[ERROR] Java ${JAVA_MAJOR:-11} required, detected: $detected"
+    echo "[ERROR] Java ${desired_major} required, detected Java major version: $detected"
+    echo "[INFO] Active java path: $(readlink -f "$java_bin" 2>/dev/null || echo "$java_bin")"
+    echo "[INFO] alternatives --display java:"
+    alternatives --display java 2>/dev/null || true
     exit 1
   fi
 
-  echo "[OK] Java ${JAVA_MAJOR:-11} validation passed"
+  echo "[OK] Java ${desired_major} validation passed"
 }
 
 # CM 7.13.x agent on RHEL 8 x86_64 needs a supported Python 3 runtime.
