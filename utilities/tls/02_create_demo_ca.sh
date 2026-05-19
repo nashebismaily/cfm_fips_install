@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
@@ -11,24 +12,31 @@ fi
 source ./tls.env
 
 : "${AUTO_TLS_WORKDIR:?AUTO_TLS_WORKDIR is required}"
+: "${AUTO_TLS_HOST_KEY_PASSWORD:?AUTO_TLS_HOST_KEY_PASSWORD is required}"
 
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib.sh
-source "${SCRIPT_DIR}/lib.sh"
+AUTO_TLS_CA_CN="${AUTO_TLS_CA_CN:-CFM Internal CA}"
+AUTO_TLS_CA_DAYS="${AUTO_TLS_CA_DAYS:-3650}"
+AUTO_TLS_CA_KEY_PASSWORD="${AUTO_TLS_CA_KEY_PASSWORD:-${AUTO_TLS_HOST_KEY_PASSWORD}}"
+AUTO_TLS_KEY_SIZE="${AUTO_TLS_KEY_SIZE:-4096}"
+AUTO_TLS_DIGEST="${AUTO_TLS_DIGEST:-sha256}"
 
-require_cmd openssl
-prepare_dirs
+CA_DIR="${AUTO_TLS_WORKDIR}/ca"
+CA_KEY="${CA_DIR}/demo-ca-key.pem"
+CA_CERT="${CA_DIR}/demo-ca-cert.pem"
+CA_CHAIN="${CA_DIR}/ca-chain.pem"
+
+mkdir -p "${CA_DIR}" "${AUTO_TLS_WORKDIR}/openssl"
+chmod 700 "${CA_DIR}"
 
 cat > "${CA_DIR}/demo-ca-openssl.cnf" <<EOF_CNF
 [ req ]
 prompt = no
-default_md = ${TLS_DIGEST}
+default_md = ${AUTO_TLS_DIGEST}
 distinguished_name = dn
 x509_extensions = v3_ca
 
 [ dn ]
-CN = ${TLS_DEMO_CA_CN}
+CN = ${AUTO_TLS_CA_CN}
 
 [ v3_ca ]
 subjectKeyIdentifier = hash
@@ -39,19 +47,20 @@ EOF_CNF
 
 openssl genpkey \
   -algorithm RSA \
-  -pkeyopt rsa_keygen_bits:"${TLS_KEY_SIZE}" \
+  -pkeyopt rsa_keygen_bits:"${AUTO_TLS_KEY_SIZE}" \
   -aes-256-cbc \
-  -pass pass:"${TLS_DEMO_CA_KEY_PASSWORD}" \
-  -out "$CA_KEY"
-chmod 600 "$CA_KEY"
+  -pass "pass:${AUTO_TLS_CA_KEY_PASSWORD}" \
+  -out "${CA_KEY}"
+chmod 600 "${CA_KEY}"
 
 openssl req -x509 -new \
-  -key "$CA_KEY" \
-  -passin pass:"${TLS_DEMO_CA_KEY_PASSWORD}" \
-  -days "${TLS_DEMO_CA_DAYS}" \
-  -out "$CA_CERT" \
+  -key "${CA_KEY}" \
+  -passin "pass:${AUTO_TLS_CA_KEY_PASSWORD}" \
+  -days "${AUTO_TLS_CA_DAYS}" \
+  -out "${CA_CERT}" \
   -config "${CA_DIR}/demo-ca-openssl.cnf"
 
-cp -f "$CA_CERT" "$CA_CHAIN"
-chmod 644 "$CA_CERT" "$CA_CHAIN"
-ok "Created demo CA: ${CA_CERT}"
+cp -f "${CA_CERT}" "${CA_CHAIN}"
+chmod 644 "${CA_CERT}" "${CA_CHAIN}"
+echo "[OK] Created CA certificate: ${CA_CERT}"
+echo "[OK] Created CA chain: ${CA_CHAIN}"
